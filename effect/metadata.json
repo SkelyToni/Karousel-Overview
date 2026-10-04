@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "KWin/Effect",
+  "KPlugin": {
+    "Id": "scrolloverview",
+    "Name": "Scroll Overview",
+    "Description": "A spatial overview of Karousel columns and vertically arranged desktops",
+    "Category": "Window Management",
+    "License": "GPL-3.0-or-later",
+    "Version": "0.7.0",
+    "EnabledByDefault": false
+  },
+  "X-Plasma-API": "declarativescript",
+  "X-KDE-Ordering": 60
+}

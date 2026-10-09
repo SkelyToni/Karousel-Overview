@@ -1,5 +1,6 @@
 import QtQuick
 import org.kde.kwin as KWin
+import "Style.js" as Style
 
 Rectangle {
     id: ghost
@@ -24,9 +25,9 @@ Rectangle {
     opacity: destination !== null && sourceId !== "" ? 1 : 0
     visible: opacity > 0
     z: 10
-    radius: 7
-    color: "#4078a7ff"
-    border.color: "#a8c7ff"
+    radius: Style.previewRadius
+    color: Style.dropGhostFill
+    border.color: Style.dropGhostBorder
     border.width: 3
     Behavior on opacity { NumberAnimation { duration: 90 } }
     Behavior on x { enabled: ghost.animatePosition; NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }

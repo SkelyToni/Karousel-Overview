@@ -4,6 +4,7 @@ import org.kde.kwin as KWin
 import "Bridge.js" as Bridge
 import "Layout.js" as Layout
 import "DropPreview.js" as DropPreview
+import "Style.js" as Style
 
 KWin.SceneEffect {
     id: effect
@@ -19,7 +20,7 @@ KWin.SceneEffect {
     readonly property bool animating: gesturing || revealMotion.running
     // Window chrome (borders, captions, rounding) appears late while opening
     // and leaves early while closing, so the zoom itself stays uncluttered.
-    readonly property real chrome: Math.max(0, Math.min(1, (reveal - 0.4) / 0.6))
+    readonly property real chrome: Math.max(0, Math.min(1, (reveal - Style.chromeStart) / (1 - Style.chromeStart)))
 
     ShortcutGuard { active: effect.visible }
 
@@ -71,7 +72,7 @@ KWin.SceneEffect {
         }
     }
     Timer {
-        interval: 150
+        interval: Style.refreshIntervalMs
         repeat: true
         running: effect.visible && !effect.closing && !effect.draggedId && !effect.animating
         onTriggered: {
@@ -132,10 +133,10 @@ KWin.SceneEffect {
         focus: true
         readonly property var screen: KWin.SceneView.screen
         property var rows: []
-        readonly property real zoom: 0.48
+        readonly property real zoom: Style.zoom
         readonly property real rowHeight: screen.geometry.height * zoom
-        readonly property real rowGap: 64
-        readonly property real columnSpacing: 12
+        readonly property real rowGap: Style.rowGap
+        readonly property real columnSpacing: Style.columnSpacing
         readonly property real columnGapExtra: columnSpacing * effect.reveal
         // Interpolate scale geometrically so the zoom rate looks constant.
         readonly property real cameraScale: Math.pow(1 / zoom, 1 - effect.reveal)
@@ -304,7 +305,7 @@ KWin.SceneEffect {
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 target: null
                 onWheel: function(event) {
-                    view.scrollAxis(true, event.pixelDelta.x ? -event.pixelDelta.x : event.angleDelta.x * 1.8, event.x, event.y);
+                    view.scrollAxis(true, event.pixelDelta.x ? -event.pixelDelta.x : event.angleDelta.x * Style.wheelAngleScale, event.x, event.y);
                     event.accepted = true;
                 }
             }
@@ -313,7 +314,7 @@ KWin.SceneEffect {
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 target: null
                 onWheel: function(event) {
-                    view.scrollAxis(false, event.pixelDelta.y ? -event.pixelDelta.y : event.angleDelta.y * 1.8, event.x, event.y);
+                    view.scrollAxis(false, event.pixelDelta.y ? -event.pixelDelta.y : event.angleDelta.y * Style.wheelAngleScale, event.x, event.y);
                     event.accepted = true;
                 }
             }
@@ -330,13 +331,18 @@ KWin.SceneEffect {
             onTriggered: {
                 var elapsed = Math.min(40, frameTime * 1000);
                 if (elapsed <= 0) return;
+                // Scroll faster the closer the dragged window is to an edge.
+                var edge = Style.edgeScroll;
+                function push(position, extent, zone, speed) {
+                    if (position < zone) return -speed * elapsed * Math.min(1, (zone - position) / zone);
+                    if (position > extent - zone) return speed * elapsed * Math.min(1, (position - extent + zone) / zone);
+                    return 0;
+                }
                 var row = view.rowAt(dragToken.x, dragToken.y);
-                if (row && dragToken.x < 64) row.pan(-0.7 * elapsed * Math.min(1, (64 - dragToken.x) / 64));
-                else if (row && dragToken.x > view.width - 64)
-                    row.pan(0.7 * elapsed * Math.min(1, (dragToken.x - view.width + 64) / 64));
-                if (dragToken.y < 72) verticalMotion.pan(-0.6 * elapsed * Math.min(1, (72 - dragToken.y) / 72));
-                else if (dragToken.y > view.height - 72)
-                    verticalMotion.pan(0.6 * elapsed * Math.min(1, (dragToken.y - view.height + 72) / 72));
+                var dx = push(dragToken.x, view.width, edge.horizontalZone, edge.horizontalSpeed);
+                var dy = push(dragToken.y, view.height, edge.verticalZone, edge.verticalSpeed);
+                if (row && dx) row.pan(dx);
+                if (dy) verticalMotion.pan(dy);
             }
         }
 
@@ -345,7 +351,7 @@ KWin.SceneEffect {
         // only the dimming follows the transition.
         Item {
             anchors.fill: parent
-            Rectangle { anchors.fill: parent; color: "#11141c" }
+            Rectangle { anchors.fill: parent; color: Style.backdropColor }
             KWin.DesktopBackground {
                 id: wallpaper
                 anchors.fill: parent
@@ -354,14 +360,14 @@ KWin.SceneEffect {
                 outputName: view.screen.name
                 visible: false
             }
-            FastBlur { anchors.fill: parent; source: wallpaper; radius: 64 }
-            Rectangle { anchors.fill: parent; color: "#11141c"; opacity: 0.45 * effect.reveal }
+            FastBlur { anchors.fill: parent; source: wallpaper; radius: Style.backdropBlur }
+            Rectangle { anchors.fill: parent; color: Style.backdropColor; opacity: Style.backdropDim * effect.reveal }
         }
         Flickable {
             id: desktops
             anchors.fill: parent
-            anchors.topMargin: 36
-            anchors.bottomMargin: 36
+            anchors.topMargin: Style.rowMargin
+            anchors.bottomMargin: Style.rowMargin
             clip: false
             contentWidth: width
             contentHeight: rowColumn.height + height - view.rowHeight
@@ -473,7 +479,7 @@ KWin.SceneEffect {
                                 activity: KWin.Workspace.currentActivity
                                 desktop: desktopRow.modelData.desktop
                                 outputName: view.screen.name
-                                opacity: 1 - 0.35 * effect.reveal
+                                opacity: 1 - Style.desktopDim * effect.reveal
                             }
                             // KWin blurs the wallpaper behind translucent windows. While the
                             // transition shows real-size windows, back them with the same kind
@@ -492,16 +498,16 @@ KWin.SceneEffect {
                                         outputName: view.screen.name
                                         visible: false
                                     }
-                                    FastBlur { id: blurred; anchors.fill: parent; source: blurSource; radius: 40; visible: false }
+                                    FastBlur { id: blurred; anchors.fill: parent; source: blurSource; radius: Style.translucentBlur; visible: false }
                                 }
                             }
                             Rectangle {
                                 anchors.fill: parent
                                 color: "transparent"
-                                radius: 12 * effect.chrome
+                                radius: Style.desktopRadius * effect.chrome
                                 border.width: effect.chrome
                                 opacity: effect.chrome
-                                border.color: desktopRow.index === view.selectedRow ? "#7287a8" : "#3b4252"
+                                border.color: desktopRow.index === view.selectedRow ? Style.desktopBorderSelected : Style.desktopBorder
                             }
                             MouseArea {
                                 anchors.fill: parent
@@ -511,8 +517,8 @@ KWin.SceneEffect {
                         Flickable {
                             id: strip
                             anchors.fill: parent
-                            anchors.leftMargin: 32
-                            anchors.rightMargin: 32
+                            anchors.leftMargin: Style.stripMargin
+                            anchors.rightMargin: Style.stripMargin
                             // Keep clipping stable throughout the zoom; the output clips the scene.
                             clip: false
                             interactive: !effect.closing && !effect.gesturing
@@ -586,19 +592,19 @@ KWin.SceneEffect {
                                     width: modelData.width * view.zoom
                                     height: modelData.height * view.zoom
                                     z: modelData.tiled ? 1 : 2
-                                    Behavior on x { enabled: preview.animateGeometry; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                                    Behavior on y { enabled: preview.animateGeometry; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                                    Behavior on width { enabled: preview.animateGeometry; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                                    Behavior on height { enabled: preview.animateGeometry; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                    Behavior on x { enabled: preview.animateGeometry; NumberAnimation { duration: Style.previewSlideMs; easing.type: Easing.OutCubic } }
+                                    Behavior on y { enabled: preview.animateGeometry; NumberAnimation { duration: Style.previewSlideMs; easing.type: Easing.OutCubic } }
+                                    Behavior on width { enabled: preview.animateGeometry; NumberAnimation { duration: Style.previewSlideMs; easing.type: Easing.OutCubic } }
+                                    Behavior on height { enabled: preview.animateGeometry; NumberAnimation { duration: Style.previewSlideMs; easing.type: Easing.OutCubic } }
                                     Rectangle {
                                         anchors.fill: parent
-                                        anchors.margins: preview.modelData.id === view.selectedWindow ? -4 * effect.chrome : 0
-                                        radius: 7 * effect.chrome
+                                        anchors.margins: preview.modelData.id === view.selectedWindow ? -Style.selectionWidth * effect.chrome : 0
+                                        radius: Style.previewRadius * effect.chrome
                                         // Fades like the rest of the chrome, so translucent windows end
                                         // the transition over the blur KWin draws behind them.
-                                        color: Qt.rgba(0.094, 0.11, 0.145, effect.chrome)
-                                        border.width: preview.modelData.id === view.selectedWindow ? 4 * effect.chrome : 0
-                                        border.color: "#78a7ff"
+                                        color: Qt.alpha(Style.previewBacking, effect.chrome)
+                                        border.width: preview.modelData.id === view.selectedWindow ? Style.selectionWidth * effect.chrome : 0
+                                        border.color: Style.accent
                                     }
                                     ShaderEffectSource {
                                         anchors.fill: parent
@@ -612,23 +618,23 @@ KWin.SceneEffect {
                                         anchors.fill: parent
                                         wId: preview.modelData.id
                                         opacity: effect.draggedId === preview.modelData.id ? 0.5 : 1
-                                        Behavior on opacity { NumberAnimation { duration: 100 } }
+                                        Behavior on opacity { NumberAnimation { duration: Style.dragFadeMs } }
                                     }
                                     Rectangle {
                                         anchors.left: parent.left
                                         anchors.right: parent.right
                                         anchors.bottom: parent.bottom
-                                        height: 25
-                                        color: "#cc141821"
+                                        height: Style.captionHeight
+                                        color: Style.captionBackground
                                         opacity: effect.chrome * (previewMouse.containsMouse || preview.modelData.id === view.selectedWindow ? 1 : 0)
-                                        Behavior on opacity { NumberAnimation { duration: 120 } }
+                                        Behavior on opacity { NumberAnimation { duration: Style.captionFadeMs } }
                                         Text {
                                             anchors.fill: parent
                                             anchors.margins: 5
                                             text: preview.modelData.caption
                                             elide: Text.ElideRight
-                                            color: "#eef0f5"
-                                            font.pixelSize: 11
+                                            color: Style.captionText
+                                            font.pixelSize: Style.captionFontSize
                                         }
                                     }
                                     DropArea {
@@ -737,7 +743,7 @@ KWin.SceneEffect {
                     { gap: view.width - area.x - area.width / 2, dx: view.width - area.x, dy: 0 }
                 ].sort(function(a, b) { return a.gap - b.gap; })
                 // Leave a little faster than the zoom so the panel is gone mid-way.
-                readonly property real progress: Math.min(1, effect.reveal / 0.7)
+                readonly property real progress: Math.min(1, effect.reveal / Style.panelExit)
                 wId: String(modelData.internalId)
                 x: area.x + exits[0].dx * progress
                 y: area.y + exits[0].dy * progress
@@ -760,8 +766,8 @@ KWin.SceneEffect {
                 width: 180; height: 100
                 x: -90; y: -50
                 radius: 8
-                color: "#26324a"
-                border.color: "#78a7ff"
+                color: Style.dragTokenColor
+                border.color: Style.accent
                 border.width: 2
                 visible: effect.draggedId !== ""
                 KWin.WindowThumbnail { anchors.fill: parent; wId: effect.draggedId }

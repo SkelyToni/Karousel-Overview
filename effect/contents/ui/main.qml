@@ -2,6 +2,7 @@ import QtQuick
 import Qt5Compat.GraphicalEffects
 import org.kde.kwin as KWin
 import "Bridge.js" as Bridge
+import "Layout.js" as Layout
 import "DropPreview.js" as DropPreview
 
 KWin.SceneEffect {
@@ -12,6 +13,13 @@ KWin.SceneEffect {
     property bool closing: false
     property string draggedId: ""
     property int revision: 0
+    // The backdrop keeps the wallpaper the overview opened from; following a
+    // desktop switch would swap and re-blur it in the middle of closing.
+    property var openedDesktop: null
+    readonly property bool animating: gesturing || revealMotion.running
+    // Window chrome (borders, captions, rounding) appears late while opening
+    // and leaves early while closing, so the zoom itself stays uncluttered.
+    readonly property real chrome: Math.max(0, Math.min(1, (reveal - 0.4) / 0.6))
 
     ShortcutGuard { active: effect.visible }
 
@@ -21,9 +29,9 @@ KWin.SceneEffect {
             return false;
         }
         if (!visible) {
-            transition.stop();
             closing = false;
-            reveal = 0;
+            openedDesktop = KWin.Workspace.currentDesktop;
+            revealMotion.reset(0);
             Bridge.setVisible(true);
             visible = true;
         }
@@ -31,11 +39,8 @@ KWin.SceneEffect {
     }
     function open() {
         if (begin()) {
-            transition.stop();
             gesturing = false;
-            transition.to = 1;
-            transition.duration = Math.max(100, 320 * (1 - reveal));
-            transition.restart();
+            revealMotion.animateTo(1);
         }
     }
     function prepareClose() {
@@ -43,27 +48,23 @@ KWin.SceneEffect {
     }
     function finishClose() {
         visible = false;
-        closing = false;
+        // Leave `closing` set: this runs inside the final animation tick, and
+        // clearing it would drop the camera pan for that last rendered frame,
+        // flashing the window the overview was opened from. begin() resets it.
         draggedId = "";
         Bridge.setVisible(false);
     }
     function close() {
-        transition.stop();
         prepareClose();
         gesturing = false;
-        if (reveal <= 0) finishClose();
-        else {
-            transition.to = 0;
-            transition.duration = Math.max(100, 320 * reveal);
-            transition.restart();
-        }
+        if (reveal <= 0) { revealMotion.reset(0); finishClose(); }
+        else revealMotion.animateTo(0);
     }
     function toggle() { if (visible) close(); else open(); }
 
-    NumberAnimation {
-        id: transition
-        target: effect; property: "reveal"
-        duration: 320; easing.type: Easing.OutCubic
+    RevealMotion {
+        id: revealMotion
+        target: effect
         onFinished: {
             if (to === 0) effect.finishClose();
             else effect.closing = false;
@@ -72,7 +73,7 @@ KWin.SceneEffect {
     Timer {
         interval: 150
         repeat: true
-        running: effect.visible && !effect.closing && !effect.draggedId
+        running: effect.visible && !effect.closing && !effect.draggedId && !effect.animating
         onTriggered: {
             if (!Bridge.ready()) effect.close();
             else effect.revision++;
@@ -91,10 +92,9 @@ KWin.SceneEffect {
             if (!effect.gesturing) {
                 effect.gestureStartedOpen = effect.visible;
                 if (effect.gestureStartedOpen || !effect.begin()) return;
-                transition.stop();
                 effect.gesturing = true;
             }
-            if (!effect.gestureStartedOpen) effect.reveal = progress;
+            if (!effect.gestureStartedOpen) revealMotion.track(progress);
         }
         onActivated: {
             if (!effect.gestureStartedOpen) effect.open();
@@ -112,10 +112,9 @@ KWin.SceneEffect {
         fingerCount: 4
         onProgressChanged: {
             if (!effect.visible) return;
-            transition.stop();
             effect.prepareClose();
             effect.gesturing = true;
-            effect.reveal = 1 - progress;
+            revealMotion.track(1 - progress);
         }
         onActivated: { if (effect.visible) effect.close(); }
         onCancelled: { if (effect.visible) effect.open(); }
@@ -137,6 +136,12 @@ KWin.SceneEffect {
         readonly property real rowGap: 64
         readonly property real columnSpacing: 12
         readonly property real columnGapExtra: columnSpacing * effect.reveal
+        // Interpolate scale geometrically so the zoom rate looks constant.
+        readonly property real cameraScale: Math.pow(1 / zoom, 1 - effect.reveal)
+        // Share of the closing pan applied at the current scale. Tying the pan to
+        // the scale makes the camera a pure zoom about one fixed point, so the
+        // destination window grows along a straight line instead of drifting.
+        readonly property real cameraTravel: (1 - 1 / cameraScale) / (1 - zoom)
         property int selectedRow: 0
         property string selectedWindow: ""
         property bool initialized: false
@@ -145,12 +150,15 @@ KWin.SceneEffect {
         property real closingOffsetY: 0
         property var dropPreview: null
         property var dropOwner: null
+        // Set before the closing refresh so every preview stops animating its
+        // geometry first; relying on `closing` alone left that to signal order.
+        property bool geometryLocked: false
 
         function previewDrop(row, position, stackId, owner) {
             if (!effect.draggedId || !Bridge.provider) { dropPreview = null; return; }
             var world = Bridge.provider.world;
             var layout = world.desktopManager.getDesktopInCurrentActivity(row.desktop);
-            var client = Bridge.findClient(effect.draggedId);
+            var client = Layout.findClient(Bridge.provider, effect.draggedId);
             var window = client ? world.clientManager.findTiledWindow(client) : null;
             if (!layout || !window) { dropPreview = null; return; }
             dropOwner = owner;
@@ -169,8 +177,8 @@ KWin.SceneEffect {
 
         function refresh() {
             if (effect.draggedId) return;
-            var next = Bridge.snapshot(screen);
-            var nextSignature = Bridge.signature(next);
+            var next = Layout.snapshot(Bridge.provider, screen);
+            var nextSignature = Layout.signature(next);
             if (nextSignature === rowSignature) return;
             rowSignature = nextSignature;
             rows = next;
@@ -208,8 +216,10 @@ KWin.SceneEffect {
             }
         }
         function activate(id, desktopId) {
-            if (!Bridge.focus(id, desktopId)) return;
-            refresh();
+            if (effect.closing || effect.gesturing) return;
+            if (!Layout.focus(Bridge.provider, id, desktopId)) return;
+            // Closing refreshes the layout itself once previews stop animating
+            // their geometry, so the focus change cannot start a competing slide.
             effect.close();
         }
         function navigateWindow(direction) {
@@ -248,13 +258,21 @@ KWin.SceneEffect {
             }
             function onRevisionChanged() { view.refresh(); }
             function onClosingChanged() {
+                view.geometryLocked = effect.closing;
                 if (!effect.closing) return;
                 verticalMotion.stop();
                 desktops.cancelFlick();
+                // Focusing a window rescrolls Karousel, which can change a row's
+                // origin padding; keep each strip where it is on screen.
+                var anchors = [];
+                for (var j = 0; j < rowRepeater.count; ++j) {
+                    var shown = rowRepeater.itemAt(j);
+                    anchors.push(shown ? shown.holdScroll() : null);
+                }
                 view.refresh();
                 for (var i = 0; i < view.rows.length; ++i) {
                     var row = rowRepeater.itemAt(i);
-                    if (row) row.prepareClose();
+                    if (row) row.prepareClose(anchors[i]);
                     if (view.rows[i].current)
                         view.closingOffsetY = desktops.contentY - i * (view.rowHeight + view.rowGap);
                 }
@@ -322,20 +340,21 @@ KWin.SceneEffect {
         }
 
         // Same wallpaper source and blur radius as Plasma's built-in overview.
+        // It stays opaque so edges uncovered by the zoom never flash dark;
+        // only the dimming follows the transition.
         Item {
             anchors.fill: parent
-            opacity: effect.reveal
             Rectangle { anchors.fill: parent; color: "#11141c" }
             KWin.DesktopBackground {
                 id: wallpaper
                 anchors.fill: parent
                 activity: KWin.Workspace.currentActivity
-                desktop: KWin.Workspace.currentDesktop
+                desktop: effect.openedDesktop || KWin.Workspace.currentDesktop
                 outputName: view.screen.name
                 visible: false
             }
             FastBlur { anchors.fill: parent; source: wallpaper; radius: 64 }
-            Rectangle { anchors.fill: parent; color: "#11141c"; opacity: 0.45 }
+            Rectangle { anchors.fill: parent; color: "#11141c"; opacity: 0.45 * effect.reveal }
         }
         Flickable {
             id: desktops
@@ -356,12 +375,12 @@ KWin.SceneEffect {
             }
             interactive: !effect.closing && !effect.gesturing
             contentItem.transform: Translate {
-                y: effect.closing ? view.closingOffsetY * (1 - effect.reveal) : 0
+                y: effect.closing ? view.closingOffsetY * view.cameraTravel : 0
             }
             transform: Scale {
                 origin.x: desktops.width / 2
                 origin.y: desktops.height / 2
-                xScale: 1 / view.zoom + (1 - 1 / view.zoom) * effect.reveal
+                xScale: view.cameraScale
                 yScale: xScale
             }
             Column {
@@ -421,9 +440,15 @@ KWin.SceneEffect {
                             }
                             return modelData.columns.length;
                         }
-                        function prepareClose() {
+                        function holdScroll() {
                             horizontalMotion.stop();
                             strip.cancelFlick();
+                            return strip.contentX - originPadding;
+                        }
+                        function prepareClose(anchor) {
+                            horizontalMotion.stop();
+                            strip.cancelFlick();
+                            if (anchor !== null && anchor !== undefined) strip.contentX = anchor + originPadding;
                             closingOffsetX = strip.contentX - (originPadding + modelData.viewX * view.zoom);
                         }
                         function ensureWindow(window) {
@@ -449,11 +474,32 @@ KWin.SceneEffect {
                                 outputName: view.screen.name
                                 opacity: 1 - 0.35 * effect.reveal
                             }
+                            // KWin blurs the wallpaper behind translucent windows. While the
+                            // transition shows real-size windows, back them with the same kind
+                            // of blur so the handoff to the desktop does not change them.
+                            Loader {
+                                id: blurBacking
+                                anchors.fill: parent
+                                active: desktopRow.modelData.current && effect.chrome < 1
+                                sourceComponent: Item {
+                                    property alias blur: blurred
+                                    KWin.DesktopBackground {
+                                        id: blurSource
+                                        anchors.fill: parent
+                                        activity: KWin.Workspace.currentActivity
+                                        desktop: desktopRow.modelData.desktop
+                                        outputName: view.screen.name
+                                        visible: false
+                                    }
+                                    FastBlur { id: blurred; anchors.fill: parent; source: blurSource; radius: 40; visible: false }
+                                }
+                            }
                             Rectangle {
                                 anchors.fill: parent
                                 color: "transparent"
-                                radius: 12 * effect.reveal
-                                border.width: effect.reveal
+                                radius: 12 * effect.chrome
+                                border.width: effect.chrome
+                                opacity: effect.chrome
                                 border.color: desktopRow.index === view.selectedRow ? "#7287a8" : "#3b4252"
                             }
                             MouseArea {
@@ -470,7 +516,7 @@ KWin.SceneEffect {
                             clip: false
                             interactive: !effect.closing && !effect.gesturing
                             contentItem.transform: Translate {
-                                x: effect.closing ? desktopRow.closingOffsetX * (1 - effect.reveal) : 0
+                                x: effect.closing ? desktopRow.closingOffsetX * view.cameraTravel : 0
                             }
                             contentWidth: Math.max(width, desktopRow.modelData.width * view.zoom + 2 * desktopRow.inset + desktopRow.originPadding
                                 + Math.max(0, desktopRow.modelData.columns.length - 1) * view.columnSpacing)
@@ -517,7 +563,7 @@ KWin.SceneEffect {
                                     onExited: view.clearDrop(columnDrop)
                                     onDropped: function(drop) {
                                         var position = desktopRow.insertionPosition(drop.x);
-                                        Bridge.move(effect.draggedId, desktopRow.modelData.id, position, "");
+                                        Layout.move(Bridge.provider, effect.draggedId, desktopRow.modelData.id, position, "");
                                         view.clearDrop(columnDrop);
                                         drop.acceptProposedAction();
                                     }
@@ -529,7 +575,7 @@ KWin.SceneEffect {
                                     id: preview
                                     required property int index
                                     readonly property var modelData: desktopRow.renderedWindows[index]
-                                    readonly property bool animateGeometry: effect.reveal > 0.99 && !effect.closing && !effect.draggedId
+                                    readonly property bool animateGeometry: effect.reveal === 1 && !effect.animating && !effect.closing && !view.geometryLocked && !effect.draggedId
                                     x: desktopRow.inset + desktopRow.originPadding + modelData.x * view.zoom
                                         + (modelData.tiled ? modelData.columnIndex * view.columnGapExtra : 0)
                                     // Center each complete column in the wallpaper during
@@ -545,11 +591,21 @@ KWin.SceneEffect {
                                     Behavior on height { enabled: preview.animateGeometry; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                                     Rectangle {
                                         anchors.fill: parent
-                                        anchors.margins: preview.modelData.id === view.selectedWindow ? -4 * effect.reveal : 0
-                                        radius: 7 * effect.reveal
-                                        color: "#181c25"
-                                        border.width: preview.modelData.id === view.selectedWindow ? 4 * effect.reveal : 0
+                                        anchors.margins: preview.modelData.id === view.selectedWindow ? -4 * effect.chrome : 0
+                                        radius: 7 * effect.chrome
+                                        // Fades like the rest of the chrome, so translucent windows end
+                                        // the transition over the blur KWin draws behind them.
+                                        color: Qt.rgba(0.094, 0.11, 0.145, effect.chrome)
+                                        border.width: preview.modelData.id === view.selectedWindow ? 4 * effect.chrome : 0
                                         border.color: "#78a7ff"
+                                    }
+                                    ShaderEffectSource {
+                                        anchors.fill: parent
+                                        visible: sourceItem !== null
+                                        sourceItem: blurBacking.item ? blurBacking.item.blur : null
+                                        // The wallpaper under the window once it is back on the desktop.
+                                        sourceRect: Qt.rect((preview.modelData.x - desktopRow.modelData.viewX) * view.zoom,
+                                            preview.modelData.y * view.zoom, preview.width, preview.height)
                                     }
                                     KWin.WindowThumbnail {
                                         anchors.fill: parent
@@ -563,7 +619,7 @@ KWin.SceneEffect {
                                         anchors.bottom: parent.bottom
                                         height: 25
                                         color: "#cc141821"
-                                        opacity: effect.reveal * (previewMouse.containsMouse || preview.modelData.id === view.selectedWindow ? 1 : 0)
+                                        opacity: effect.chrome * (previewMouse.containsMouse || preview.modelData.id === view.selectedWindow ? 1 : 0)
                                         Behavior on opacity { NumberAnimation { duration: 120 } }
                                         Text {
                                             anchors.fill: parent
@@ -587,7 +643,7 @@ KWin.SceneEffect {
                                         onExited: view.clearDrop(stackDrop)
                                         onDropped: function(drop) {
                                             if (effect.draggedId !== preview.modelData.id) {
-                                                Bridge.move(effect.draggedId, desktopRow.modelData.id,
+                                                Layout.move(Bridge.provider, effect.draggedId, desktopRow.modelData.id,
                                                     preview.modelData.columnIndex, preview.modelData.id);
                                                 drop.acceptProposedAction();
                                             }
@@ -650,6 +706,45 @@ KWin.SceneEffect {
                         }
                     }
                 }
+            }
+        }
+        // Live copies of this screen's panels sit exactly over the real ones
+        // when closed and slide out toward their edge as the overview opens,
+        // so neither end of the transition makes them pop.
+        Repeater {
+            id: panels
+            model: []
+            Component.onCompleted: {
+                var docks = [];
+                var windows = KWin.Workspace.windows;
+                for (var i = 0; i < windows.length; ++i) {
+                    var w = windows[i];
+                    if (w.dock && !w.hidden && w.output && w.output.name === view.screen.name) docks.push(w);
+                }
+                model = docks;
+            }
+            delegate: KWin.WindowThumbnail {
+                required property var modelData
+                readonly property rect area: Qt.rect(modelData.frameGeometry.x - view.screen.geometry.x,
+                    modelData.frameGeometry.y - view.screen.geometry.y,
+                    modelData.frameGeometry.width, modelData.frameGeometry.height)
+                // Slide toward the nearest screen edge, far enough to leave it.
+                readonly property var exits: [
+                    { gap: area.y + area.height / 2, dx: 0, dy: -(area.y + area.height) },
+                    { gap: view.height - area.y - area.height / 2, dx: 0, dy: view.height - area.y },
+                    { gap: area.x + area.width / 2, dx: -(area.x + area.width), dy: 0 },
+                    { gap: view.width - area.x - area.width / 2, dx: view.width - area.x, dy: 0 }
+                ].sort(function(a, b) { return a.gap - b.gap; })
+                // Leave a little faster than the zoom so the panel is gone mid-way.
+                readonly property real progress: Math.min(1, effect.reveal / 0.7)
+                wId: String(modelData.internalId)
+                x: area.x + exits[0].dx * progress
+                y: area.y + exits[0].dy * progress
+                width: area.width
+                height: area.height
+                z: 50
+                opacity: 1 - progress
+                visible: progress < 1
             }
         }
         Item {

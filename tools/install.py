@@ -195,6 +195,13 @@ def main():
         if previous_id != plugin_id:
             command("kwriteconfig6", "--file", "kwinrc", "--group", "Plugins", "--key", previous_id + "Enabled", "false")
         command("kwriteconfig6", "--file", "kwinrc", "--group", "Plugins", "--key", plugin_id + "Enabled", "true")
+        # An install without a reload leaves its predecessor running, and the
+        # manifest then no longer names it; unload every other loaded revision.
+        loaded = command("qdbus6", "org.kde.KWin", "/Effects", "org.kde.kwin.Effects.loadedEffects").split()
+        for stale in loaded:
+            if stale != plugin_id and (stale == "scrolloverview" or stale.startswith("scrolloverview-")):
+                command("kwriteconfig6", "--file", "kwinrc", "--group", "Plugins", "--key", stale + "Enabled", "false")
+                command("qdbus6", "org.kde.KWin", "/Effects", "org.kde.kwin.Effects.unloadEffect", stale)
         command("qdbus6", "org.kde.KWin", "/Effects", "org.kde.kwin.Effects.unloadEffect", previous_id)
     if args.activate:
         command("kwriteconfig6", "--file", "kwinrc", "--group", "Plugins", "--key", "overviewEnabled", "false")

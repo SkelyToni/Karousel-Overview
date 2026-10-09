@@ -103,6 +103,19 @@ class InstallerTests(unittest.TestCase):
             mock.call("qdbus6", "org.kde.KWin", "/Effects", "org.kde.kwin.Effects.loadEffect", installer.effect_id())])
         self.assertFalse(any("/Scripting" in call.args for call in command.call_args_list))
 
+    def test_reload_unloads_revisions_missing_from_manifest(self):
+        self.assertEqual(self.run_installer("install").returncode, 0)
+        loaded = "kwin4_effect_geometry_change\nscrolloverview-0123456789ab\n" + installer.effect_id()
+        with mock.patch.object(sys, "argv", ["install.py", "install", "--data-home", str(self.data), "--reload-effect"]):
+            with mock.patch.object(installer, "command",
+                                   side_effect=lambda *args: loaded if args[-1].endswith("loadedEffects") else "true") as command:
+                installer.main()
+        unloaded = [call.args[-1] for call in command.call_args_list if "org.kde.kwin.Effects.unloadEffect" in call.args]
+        self.assertIn("scrolloverview-0123456789ab", unloaded)
+        self.assertNotIn("kwin4_effect_geometry_change", unloaded)
+        self.assertIn(mock.call("kwriteconfig6", "--file", "kwinrc", "--group", "Plugins",
+                                "--key", "scrolloverview-0123456789abEnabled", "false"), command.call_args_list)
+
     def test_changed_qml_uses_fresh_package_and_same_shared_bridge(self):
         self.assertEqual(self.run_installer("install").returncode, 0)
         manifest_path = self.package / ".scrolloverview-backup/manifest.json"

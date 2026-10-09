@@ -82,19 +82,19 @@ GLCore=true
         interval: 4500; running: true
         onTriggered: {
             var screen = KWin.Workspace.screens[0];
-            var rows = Bridge.snapshot(screen);
+            var rows = Layout.snapshot(Bridge.provider, screen);
             var moved = rows[0].windows[0].id;
             var stacked = rows[0].windows[1].id;
-            Bridge.move(moved, rows[0].id, 0, stacked);
-            rows = Bridge.snapshot(screen);
+            Layout.move(Bridge.provider, moved, rows[0].id, 0, stacked);
+            rows = Layout.snapshot(Bridge.provider, screen);
             console.log("SCROLLOVERVIEW-STACK", rows[0].columns.length);
-            Bridge.move(moved, rows[0].id, 0, "");
-            rows = Bridge.snapshot(screen);
+            Layout.move(Bridge.provider, moved, rows[0].id, 0, "");
+            rows = Layout.snapshot(Bridge.provider, screen);
             console.log("SCROLLOVERVIEW-SPLIT", rows[0].columns.length);
-            Bridge.move(moved, rows[1].id, 0, "");
-            rows = Bridge.snapshot(screen);
+            Layout.move(Bridge.provider, moved, rows[1].id, 0, "");
+            rows = Layout.snapshot(Bridge.provider, screen);
             console.log("SCROLLOVERVIEW-MOVE", rows[0].windows.length, rows[1].windows.length);
-            Bridge.focus(moved, rows[1].id);
+            Layout.focus(Bridge.provider, moved, rows[1].id);
             console.log("SCROLLOVERVIEW-FOCUS", KWin.Workspace.currentDesktop.id === rows[1].id);
         }
     }
@@ -118,10 +118,10 @@ GLCore=true
                 }
             }
         }""")
-        source = source.replace("                        function prepareClose() {", """                        function testViewportOrigin() {
+        source = source.replace("                        function holdScroll() {", """                        function testViewportOrigin() {
                             return strip.contentItem.mapToItem(view, inset + originPadding + modelData.viewX * view.zoom, 0);
                         }
-                        function prepareClose() {""")
+                        function holdScroll() {""")
         source = source.replace("Component.onCompleted: { refresh(); forceActiveFocus(); }",
                                 '''TestCase { id: keyboardTest; name: "OverviewKeys"; when: false }
         Timer {
@@ -182,7 +182,7 @@ GLCore=true
         }
         Component.onCompleted: { refresh(); forceActiveFocus(); console.log("SCROLLOVERVIEW-VIEW", rows.length, rows.reduce(function(n,r) { return n+r.windows.length; },0)); }''')
         source = source.replace("model: desktopRow.renderedWindows.length", "id: smokeWindowRepeater\n                                model: desktopRow.renderedWindows.length", 1)
-        source = source.replace("                        function prepareClose() {", """                        function testBeginDrop() {
+        source = source.replace("                        function holdScroll() {", """                        function testBeginDrop() {
                             var source = smokeWindowRepeater.itemAt(smokeWindowRepeater.count - 1);
                             var target = smokeWindowRepeater.itemAt(smokeWindowRepeater.count - 2);
                             var point = target.mapToItem(view, target.width / 2, target.height / 2);
@@ -190,7 +190,7 @@ GLCore=true
                             dragToken.y = point.y;
                             effect.draggedId = source.modelData.id;
                         }
-                        function prepareClose() {""", 1)
+                        function holdScroll() {""", 1)
         source = source.replace("id: preview", "id: preview\n                                    Component.onCompleted: view.createdPreviews++", 1)
         if args.screenshot:
             args.screenshot.parent.mkdir(parents=True, exist_ok=True)

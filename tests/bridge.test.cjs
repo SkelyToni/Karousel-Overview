@@ -2,9 +2,27 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-const bridge = vm.createContext({ console });
-const source = fs.readFileSync(path.join(__dirname, '../effect/contents/ui/Bridge.js'), 'utf8');
-vm.runInContext(source.replace(/^\.pragma library\s*/, ''), bridge);
+function load(file) {
+  const context = vm.createContext({ console });
+  const source = fs.readFileSync(path.join(__dirname, '../effect/contents/ui', file), 'utf8');
+  vm.runInContext(source.replace(/^\.pragma library\s*/, ''), context);
+  return context;
+}
+// Shared state comes from Bridge.js; layout calls from Layout.js read it the
+// same way main.qml does.
+const shared = load('Bridge.js');
+const layoutLib = load('Layout.js');
+const bridge = {
+  attach: (...args) => shared.attach(...args),
+  detach: (...args) => shared.detach(...args),
+  ready: () => shared.ready(),
+  setVisible: value => shared.setVisible(value),
+  isVisible: () => shared.isVisible(),
+  signature: rows => layoutLib.signature(rows),
+  snapshot: screen => layoutLib.snapshot(shared.provider, screen),
+  focus: (id, desktopId) => layoutLib.focus(shared.provider, id, desktopId),
+  move: (...args) => layoutLib.move(shared.provider, ...args),
+};
 
 const screen = {name: 'eDP-1', geometry: {x: 0, y: 0, width: 1000, height: 800}};
 const desktops = [{id: 'one', name: 'First'}, {id: 'two', name: 'Second'}, {id: 'three', name: 'Empty'}];
@@ -56,7 +74,9 @@ assert.equal(rows.length, 3, 'includes empty desktops');
 assert.deepEqual(Array.from(rows, r => r.id), ['one', 'two', 'three']);
 assert.deepEqual(Array.from(rows[0].windows, w => w.id), ['a', 'b', 'off'], 'layout order, not geometry or focus order');
 assert.equal(rows[0].columns[1].x, 1610, 'off-screen position comes from grid coordinates');
-assert.equal(rows[0].viewX, 590);
+assert.equal(rows[0].viewX, 600);
+assert.ok(rows[0].width >= rows[0].viewX + screen.geometry.width, 'row reaches Karousel\'s scrolled view');
+assert.equal(rows[0].columns[1].x - rows[0].viewX, 10 + 1600 - 600, 'column lands where Karousel arranges it on screen');
 assert.equal(rows[0].windows[1].focused, true);
 assert.ok(rows[0].windows[1].y + rows[0].windows[1].height <= 780.001, 'stacked windows fit the row');
 assert.equal(rows[1].floating[0].id, 'float');

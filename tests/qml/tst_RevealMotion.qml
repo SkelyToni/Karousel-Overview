@@ -40,6 +40,16 @@ Item {
             compare(root.reveal, 0);
             verify(root.lowest >= 0);
         }
+        function test_paused_gesture_has_no_release_velocity() {
+            motion.track(0.2);
+            wait(20);
+            motion.track(0.4);
+            verify(motion.releaseVelocity() > 0, "moving fingers carry speed");
+            wait(motion.staleAfterMs + 50);
+            compare(motion.releaseVelocity(), 0);
+            motion.animateTo(1);
+            compare(motion.velocity, 0, "a paused release starts the animation from rest");
+        }
         function test_tracking_stops_animation() {
             motion.animateTo(1);
             motion.track(0.3);

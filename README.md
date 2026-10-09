@@ -30,7 +30,7 @@ The backdrop uses the current wallpaper with Plasma’s overview blur. Closing u
 
 ## Controls
 
-- Four-finger swipe up opens; four-finger swipe down closes. Gesture progress controls the opening/closing transition.
+- Four-finger swipe up opens; four-finger swipe down closes. The transition follows your fingers and completes in half of KWin's full swipe distance. Releasing past halfway, or flicking, finishes the transition; releasing earlier or flicking back reverts it. Tune this with `gestureGain`, `gestureCommit` and `gestureFlick` in `effect/contents/ui/Style.js`.
 - Two-finger scroll vertically to browse desktops, with gentle settling on a desktop row; scroll horizontally to browse the columns under the pointer, with release momentum. Scrolling works over previews and empty space and follows Plasma's scroll direction. A mouse wheel also works.
 - Right-click and drag to pan a desktop horizontally. Window dragging near the screen edges scrolls the overview automatically.
 - Click a window to switch desktop, focus it, and close the overview. Click a desktop background to switch desktop.
@@ -59,6 +59,8 @@ Run the regression checks with:
 ```sh
 python3 -m unittest discover -s tests -p 'test_*.py'
 node tests/bridge.test.cjs
+node tests/drop-preview.test.cjs
+node tests/gesture.test.cjs
 ```
 
 On NixOS, `nix-shell` provides Python, Node, and Qt tools. The installer needs no build dependencies beyond Python. The shared bridge relies on Karousel 0.17's implementation details; reinstall an updated compatible bridge after any Karousel upgrade.

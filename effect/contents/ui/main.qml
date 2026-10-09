@@ -10,13 +10,12 @@ import "Style.js" as Style
 KWin.SceneEffect {
     id: effect
     // Lifecycle: begin() shows the effect at reveal 0; open() and close()
-    // animate reveal with RevealMotion, while gestures drive it directly
-    // (gesturing). `closing` is set by the first closing step and stays set
+    // animate reveal with RevealMotion, while GestureControls drives it
+    // directly (gesturing). `closing` is set by the first closing step and stays set
     // until the next begin(); the view uses it to aim the camera at the
     // destination (see the view's beginClosing()).
     property real reveal: 0
     property bool gesturing: false
-    property bool gestureStartedOpen: false
     property bool closing: false
     property string draggedId: ""
     property int revision: 0
@@ -92,40 +91,7 @@ KWin.SceneEffect {
         sequence: "Meta+Ctrl+O"
         onActivated: effect.toggle()
     }
-    KWin.SwipeGestureHandler {
-        direction: KWin.SwipeGestureHandler.Direction.Up
-        fingerCount: 4
-        onProgressChanged: {
-            if (!effect.gesturing) {
-                effect.gestureStartedOpen = effect.visible;
-                if (effect.gestureStartedOpen || !effect.begin()) return;
-                effect.gesturing = true;
-            }
-            if (!effect.gestureStartedOpen) revealMotion.track(progress);
-        }
-        onActivated: {
-            if (!effect.gestureStartedOpen) effect.open();
-            effect.gesturing = false;
-            effect.gestureStartedOpen = false;
-        }
-        onCancelled: {
-            if (effect.gesturing && !effect.gestureStartedOpen) effect.close();
-            effect.gesturing = false;
-            effect.gestureStartedOpen = false;
-        }
-    }
-    KWin.SwipeGestureHandler {
-        direction: KWin.SwipeGestureHandler.Direction.Down
-        fingerCount: 4
-        onProgressChanged: {
-            if (!effect.visible) return;
-            effect.prepareClose();
-            effect.gesturing = true;
-            revealMotion.track(1 - progress);
-        }
-        onActivated: { if (effect.visible) effect.close(); }
-        onCancelled: { if (effect.visible) effect.open(); }
-    }
+    GestureControls { overview: effect; motion: revealMotion }
     Connections {
         target: KWin.Workspace
         function onCurrentActivityChanged() { if (effect.visible) effect.close(); }
@@ -226,6 +192,8 @@ KWin.SceneEffect {
             if (animate) verticalMotion.animateTo(destination);
             else desktops.contentY = verticalMotion.clamp(destination);
         }
+        function rowItem(index) { return rowRepeater.itemAt(index); }
+        function panVertical(delta) { verticalMotion.pan(delta); }
         function rowAt(x, y) {
             for (var i = 0; i < rowRepeater.count; ++i) {
                 var row = rowRepeater.itemAt(i);
@@ -250,34 +218,6 @@ KWin.SceneEffect {
             // their geometry, so the focus change cannot start a competing slide.
             effect.close();
         }
-        function navigateWindow(direction) {
-            if (!rows.length) return;
-            var windows = rows[selectedRow].windows;
-            if (!windows.length) { selectedWindow = ""; return; }
-            var index = windows.findIndex(function(w) { return w.id === selectedWindow; });
-            index = index < 0 ? (direction < 0 ? windows.length - 1 : 0) :
-                Math.max(0, Math.min(windows.length - 1, index + direction));
-            selectedWindow = windows[index].id;
-            var rowItem = rowRepeater.itemAt(selectedRow);
-            if (rowItem) rowItem.ensureWindow(windows[index]);
-        }
-        function navigateDesktop(direction) {
-            if (!rows.length) return;
-            var oldWindows = rows[selectedRow].windows;
-            var old = oldWindows.find(function(window) { return window.id === selectedWindow; });
-            var center = old ? old.x + old.width / 2 : rows[selectedRow].viewX + screen.geometry.width / 2;
-            selectedRow = Math.max(0, Math.min(rows.length - 1, selectedRow + direction));
-            var windows = rows[selectedRow].windows;
-            var nearest = null;
-            windows.forEach(function(window) {
-                if (!nearest || Math.abs(window.x + window.width / 2 - center) <
-                    Math.abs(nearest.x + nearest.width / 2 - center)) nearest = window;
-            });
-            selectedWindow = nearest ? nearest.id : "";
-            centerRow(selectedRow, true);
-            var rowItem = rowRepeater.itemAt(selectedRow);
-            if (rowItem && nearest) rowItem.ensureWindow(nearest);
-        }
         Component.onCompleted: { refresh(); forceActiveFocus(); }
         Connections {
             target: effect
@@ -291,43 +231,14 @@ KWin.SceneEffect {
             }
         }
         Keys.priority: Keys.BeforeItem
-        Keys.onPressed: function(event) {
-            event.accepted = true;
-            if (event.key === Qt.Key_Escape) { effect.close(); return; }
-            if (event.key === Qt.Key_O && (event.modifiers & Qt.MetaModifier) &&
-                (event.modifiers & Qt.ControlModifier)) { effect.close(); return; }
-            if (effect.closing || effect.gesturing || event.modifiers !== Qt.NoModifier) return;
-            if (event.key === Qt.Key_Left) navigateWindow(-1);
-            else if (event.key === Qt.Key_Right) navigateWindow(1);
-            else if (event.key === Qt.Key_Up) navigateDesktop(-1);
-            else if (event.key === Qt.Key_Down) navigateDesktop(1);
-            else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && rows.length)
-                activate(selectedWindow, rows[selectedRow].id);
-        }
-
-        // Input-only overlay: accepts wheel events over previews and empty space,
-        // while leaving clicks, window dragging and Flickable panning available.
-        Item {
+        Keys.onPressed: function(event) { input.handleKey(event); }
+        OverviewInput {
+            id: input
             anchors.fill: parent
             z: 100
-            WheelHandler {
-                orientation: Qt.Horizontal
-                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                target: null
-                onWheel: function(event) {
-                    view.scrollAxis(true, event.pixelDelta.x ? -event.pixelDelta.x : event.angleDelta.x * Style.wheelAngleScale, event.x, event.y);
-                    event.accepted = true;
-                }
-            }
-            WheelHandler {
-                orientation: Qt.Vertical
-                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                target: null
-                onWheel: function(event) {
-                    view.scrollAxis(false, event.pixelDelta.y ? -event.pixelDelta.y : event.angleDelta.y * Style.wheelAngleScale, event.x, event.y);
-                    event.accepted = true;
-                }
-            }
+            screenView: view
+            overview: effect
+            token: dragToken
         }
 
         ScrollMotion {
@@ -336,26 +247,6 @@ KWin.SceneEffect {
             maximum: desktops.contentHeight - desktops.height
             snapStep: view.rowStep
         }
-        FrameAnimation {
-            running: effect.draggedId !== ""
-            onTriggered: {
-                var elapsed = Math.min(40, frameTime * 1000);
-                if (elapsed <= 0) return;
-                // Scroll faster the closer the dragged window is to an edge.
-                var edge = Style.edgeScroll;
-                function push(position, extent, zone, speed) {
-                    if (position < zone) return -speed * elapsed * Math.min(1, (zone - position) / zone);
-                    if (position > extent - zone) return speed * elapsed * Math.min(1, (position - extent + zone) / zone);
-                    return 0;
-                }
-                var row = view.rowAt(dragToken.x, dragToken.y);
-                var dx = push(dragToken.x, view.width, edge.horizontalZone, edge.horizontalSpeed);
-                var dy = push(dragToken.y, view.height, edge.verticalZone, edge.verticalSpeed);
-                if (row && dx) row.pan(dx);
-                if (dy) verticalMotion.pan(dy);
-            }
-        }
-
         Backdrop {
             anchors.fill: parent
             // Keep the wallpaper the overview opened from, see openedDesktop.

@@ -11,6 +11,8 @@ Item {
     property real velocity: 0
     property real to: 0
     property double lastSample: 0
+    // Gesture samples older than this no longer describe the fingers' speed.
+    property int staleAfterMs: 100
     readonly property bool running: frames.running
     readonly property real value: target ? target.reveal : 0
     signal finished()
@@ -27,8 +29,13 @@ Item {
         lastSample = now;
         target.reveal = next;
     }
+    // Finger speed at release; a gesture that paused before release has none.
+    function releaseVelocity() {
+        return lastSample && Date.now() - lastSample > staleAfterMs ? 0 : velocity;
+    }
     function animateTo(destination) {
         to = destination;
+        velocity = releaseVelocity();
         lastSample = 0;
         // Approach monotonically: velocity toward the destination larger than
         // stiffness * distance would overshoot, so the release is capped there.

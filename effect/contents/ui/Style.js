@@ -24,6 +24,9 @@ var refreshIntervalMs = 150;  // layout polling while the overview is open
 
 // Input.
 var wheelAngleScale = 1.8;    // angleDelta to pixels for mouse wheels
+var gestureGain = 2;          // four-finger swipes reach the end in 1/2 of KWin's travel
+var gestureCommit = 0.5;      // released swipes past this share of the way complete
+var gestureFlick = 1.5;       // reveal per second that completes or reverts by direction
 var edgeScroll = {
     horizontalZone: 64, horizontalSpeed: 0.7,  // px, px per ms at the very edge
     verticalZone: 72, verticalSpeed: 0.6

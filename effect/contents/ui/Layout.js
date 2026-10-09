@@ -108,6 +108,25 @@ function signature(rows) {
     }));
 }
 
+// Karousel's figures that DropPreview.plan needs to place window `id` on
+// `desktop`, or null when that desktop has no layout or `id` is not tiled.
+function dropMetrics(provider, screen, desktop, id) {
+    if (!provider) return null;
+    var world = provider.world;
+    var layout = world.desktopManager.getDesktopInCurrentActivity(desktop);
+    var client = findClient(provider, id);
+    var window = client ? world.clientManager.findTiledWindow(client) : null;
+    if (!layout || !window) return null;
+    return {
+        left: layout.tilingArea.x - screen.geometry.x,
+        height: layout.tilingArea.height,
+        screenHeight: screen.geometry.height,
+        horizontalGap: layout.grid.config.gapsInnerHorizontal,
+        verticalGap: layout.grid.config.gapsInnerVertical,
+        preferredWidth: window.client.preferredWidth
+    };
+}
+
 function findClient(provider, id) {
     if (!provider) return null;
     var windows = clients(provider);

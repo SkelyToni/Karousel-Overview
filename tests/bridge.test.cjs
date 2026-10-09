@@ -22,6 +22,7 @@ const bridge = {
   snapshot: screen => layoutLib.snapshot(shared.provider, screen),
   focus: (id, desktopId) => layoutLib.focus(shared.provider, id, desktopId),
   move: (...args) => layoutLib.move(shared.provider, ...args),
+  dropMetrics: (desktop, id) => layoutLib.dropMetrics(shared.provider, screen, desktop, id),
 };
 
 const screen = {name: 'eDP-1', geometry: {x: 0, y: 0, width: 1000, height: 800}};
@@ -41,7 +42,7 @@ const dock = client('dock', desktops[0], {normalWindow: false});
 const workspace = {desktops, currentDesktop: desktops[0], currentActivity: 'activity', activeWindow: b,
   windows: [a, b, off, floating, otherActivity, otherScreen, dock]};
 function makeColumn(x, clients) {
-  const windows = clients.map(c => ({client: {kwinClient: c}, height: 700}));
+  const windows = clients.map(c => ({client: {kwinClient: c, preferredWidth: 480}, height: 700}));
   const column = {gridX: x, getWidth: () => 500, getFirstWindow: () => windows[0],
     getBelowWindow: win => windows[windows.indexOf(win) + 1], getWindowCount: () => windows.length};
   windows.forEach(w => w.column = column);
@@ -52,7 +53,7 @@ const lastColumn = makeColumn(1600, [off]);
 const columns = [firstColumn, lastColumn];
 const grid = {getFirstColumn: () => columns[0], getRightColumn: c => columns[columns.indexOf(c) + 1],
   getLeftColumn: c => columns[columns.indexOf(c) - 1] || null,
-  getWidth: () => 2100, config: {gapsInnerVertical: 12}, moveColumn: (column, left) => {
+  getWidth: () => 2100, config: {gapsInnerHorizontal: 8, gapsInnerVertical: 12}, moveColumn: (column, left) => {
     grid.lastMove = {column, left};
   }};
 columns.forEach(c => c.grid = grid);
@@ -66,7 +67,7 @@ const clientManager = {findTiledWindow: c => {
       if (w.client.kwinClient === c) return w;
   return null;
 }};
-const world = {desktopManager: manager, do: callback => callback(clientManager, manager)};
+const world = {desktopManager: manager, clientManager, do: callback => callback(clientManager, manager)};
 assert.equal(bridge.ready(), false);
 bridge.attach(world, workspace, () => {throw new Error('unexpected new column');});
 let rows = bridge.snapshot(screen);
@@ -82,6 +83,11 @@ assert.ok(rows[0].windows[1].y + rows[0].windows[1].height <= 780.001, 'stacked 
 assert.equal(rows[1].floating[0].id, 'float');
 const signature = bridge.signature(rows);
 assert.equal(bridge.signature(bridge.snapshot(screen)), signature, 'stable snapshot avoids resetting scroll');
+assert.deepEqual({...bridge.dropMetrics(desktops[0], 'a')},
+  {left: 10, height: 760, screenHeight: 800, horizontalGap: 8, verticalGap: 12, preferredWidth: 480},
+  'drop placement uses the target desktop\'s tiling area and gaps');
+assert.equal(bridge.dropMetrics(desktops[2], 'a'), null, 'no layout, no drop placement');
+assert.equal(bridge.dropMetrics(desktops[1], 'float'), null, 'floating windows have no drop placement');
 a.caption = 'new caption';
 assert.notEqual(bridge.signature(bridge.snapshot(screen)), signature);
 assert.equal(bridge.focus('float', 'two'), true);
@@ -99,4 +105,4 @@ assert.equal(bridge.ready(), true, 'unrelated provider cannot detach the current
 bridge.detach(world);
 assert.equal(bridge.ready(), false);
 assert.equal(bridge.snapshot(screen).length, 0);
-console.log('Bridge checks passed: desktop order, exact tiling order, off-screen/stacked windows, filters, focus, reorder, lifecycle.');
+console.log('Bridge checks passed: desktop order, exact tiling order, off-screen/stacked windows, filters, drop metrics, focus, reorder, lifecycle.');

@@ -164,21 +164,10 @@ KWin.SceneEffect {
         property bool geometryLocked: false
 
         function previewDrop(row, position, stackId, owner) {
-            if (!effect.draggedId || !Bridge.provider) { dropPreview = null; return; }
-            var world = Bridge.provider.world;
-            var layout = world.desktopManager.getDesktopInCurrentActivity(row.desktop);
-            var client = Layout.findClient(Bridge.provider, effect.draggedId);
-            var window = client ? world.clientManager.findTiledWindow(client) : null;
-            if (!layout || !window) { dropPreview = null; return; }
+            var metrics = effect.draggedId ? Layout.dropMetrics(Bridge.provider, screen, row.desktop, effect.draggedId) : null;
+            if (!metrics) { dropPreview = null; return; }
             dropOwner = owner;
-            dropPreview = DropPreview.plan(rows, effect.draggedId, row, position, stackId, {
-                left: layout.tilingArea.x - screen.geometry.x,
-                height: layout.tilingArea.height,
-                screenHeight: screen.geometry.height,
-                horizontalGap: layout.grid.config.gapsInnerHorizontal,
-                verticalGap: layout.grid.config.gapsInnerVertical,
-                preferredWidth: window.client.preferredWidth
-            });
+            dropPreview = DropPreview.plan(rows, effect.draggedId, row, position, stackId, metrics);
         }
         // Prepares the camera to zoom into Karousel's view of the current
         // desktop. The steps depend on each other, in this order:

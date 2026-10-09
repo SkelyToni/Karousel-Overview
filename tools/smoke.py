@@ -67,140 +67,23 @@ overviewEnabled=false
 [Compositing]
 GLCore=true
 """)
-        # Instrument only the staged test copy; do not change the shipping effect.
-        main_qml = temp / "data/kwin/effects" / plugin_id / "contents/ui/main.qml"
-        source = main_qml.read_text().replace("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
-        source = source.replace("    id: effect", """    id: effect
-    Timer {
-        interval: 3500; running: true
-        onTriggered: {
-            console.log("SCROLLOVERVIEW-BRIDGE", Bridge.ready());
-            effect.open();
+        # Instrument only the staged test copy: add the harness from tests/smoke
+        # with one line after each of the two ids it needs.
+        ui = temp / "data/kwin/effects" / plugin_id / "contents/ui"
+        for harness in (ROOT / "tests/smoke").glob("*.qml"):
+            shutil.copy(harness, ui / harness.name)
+        delay = 2000 if args.screenshot else 0
+        main_qml = ui / "main.qml"
+        source = main_qml.read_text()
+        hooks = {
+            "    id: effect\n": f"    SmokeEffect {{ overview: effect; shortcuts: shortcutGuard; extraDelay: {delay} }}\n",
+            "        id: view\n": f"        SmokeView {{ screenView: view; overview: effect; rowItems: rowRepeater; token: dragToken; extraDelay: {delay} }}\n",
         }
-    }
-    Timer {
-        interval: 4500; running: true
-        onTriggered: {
-            var screen = KWin.Workspace.screens[0];
-            var rows = Layout.snapshot(Bridge.provider, screen);
-            var moved = rows[0].windows[0].id;
-            var stacked = rows[0].windows[1].id;
-            Layout.move(Bridge.provider, moved, rows[0].id, 0, stacked);
-            rows = Layout.snapshot(Bridge.provider, screen);
-            console.log("SCROLLOVERVIEW-STACK", rows[0].columns.length);
-            Layout.move(Bridge.provider, moved, rows[0].id, 0, "");
-            rows = Layout.snapshot(Bridge.provider, screen);
-            console.log("SCROLLOVERVIEW-SPLIT", rows[0].columns.length);
-            Layout.move(Bridge.provider, moved, rows[1].id, 0, "");
-            rows = Layout.snapshot(Bridge.provider, screen);
-            console.log("SCROLLOVERVIEW-MOVE", rows[0].windows.length, rows[1].windows.length);
-            Layout.focus(Bridge.provider, moved, rows[1].id);
-            console.log("SCROLLOVERVIEW-FOCUS", KWin.Workspace.currentDesktop.id === rows[1].id);
-        }
-    }
-    Timer {
-        interval: 6500; running: true
-        onTriggered: {
-            effect.close();
-            console.log("SCROLLOVERVIEW-CLOSE");
-        }
-    }
-""", 1)
-        source = source.replace("    function finishClose() {", "    signal testClosingEndpoint()\n    function finishClose() {\n        testClosingEndpoint();")
-        source = source.replace("        property var scrollPositions: ({})", """        property var scrollPositions: ({})
-        Connections {
-            target: effect
-            function onTestClosingEndpoint() {
-                for (var i = 0; i < view.rows.length; ++i) {
-                    if (!view.rows[i].current) continue;
-                    var point = rowRepeater.itemAt(i).testViewportOrigin();
-                    console.log("SCROLLOVERVIEW-ENDPOINT", effect.reveal === 0 && Math.abs(point.x) < 0.5 && Math.abs(point.y) < 0.5);
-                }
-            }
-        }""")
-        source = source.replace("                        function holdScroll() {", """                        function testViewportOrigin() {
-                            return strip.contentItem.mapToItem(view, inset + originPadding + modelData.viewX * view.zoom, 0);
-                        }
-                        function holdScroll() {""")
-        source = source.replace("Component.onCompleted: { refresh(); forceActiveFocus(); }",
-                                '''TestCase { id: keyboardTest; name: "OverviewKeys"; when: false }
-        Timer {
-            interval: 400; running: true
-            onTriggered: {
-                var row = rowRepeater.itemAt(0);
-                row.testBeginDrop();
-                checkDrop.restart();
-            }
-        }
-        Timer {
-            id: checkDrop
-            interval: 32
-            onTriggered: {
-                console.log("SCROLLOVERVIEW-DROP-PREVIEW", view.dropPreview !== null && view.dropPreview.stacking &&
-                    view.dropPreview.width > 0 && view.dropPreview.height > 0);
-                effect.draggedId = "";
-                console.log("SCROLLOVERVIEW-DROP-CLEAR", view.dropPreview === null);
-            }
-        }
-        Timer {
-            interval: 550; running: true
-            onTriggered: {
-                var previous = view.selectedWindow;
-                keyboardTest.keyClick(Qt.Key_Left);
-                console.log("SCROLLOVERVIEW-KEY-LEFT", view.selectedWindow !== previous && view.selectedWindow !== "");
-                var selected = view.selectedWindow;
-                keyboardTest.keyClick(Qt.Key_Right, Qt.MetaModifier);
-                console.log("SCROLLOVERVIEW-KEY-MODIFIED", view.selectedWindow === selected);
-                keyboardTest.keyClick(Qt.Key_Down);
-                console.log("SCROLLOVERVIEW-KEY-DOWN", view.selectedRow === 1 && view.selectedWindow === "");
-                keyboardTest.keyClick(Qt.Key_Up);
-                console.log("SCROLLOVERVIEW-KEY-UP", view.selectedRow === 0 && view.selectedWindow !== "");
-                keyboardTest.keyClick(Qt.Key_Right);
-                console.log("SCROLLOVERVIEW-KEY-RIGHT", view.selectedWindow !== selected);
-                view.centerRow(0);
-            }
-        }
-        property int createdPreviews: 0
-        property int oldScrollRow: 0
-        Timer {
-            id: checkVerticalScroll
-            interval: 80
-            onTriggered: console.log("SCROLLOVERVIEW-VSCROLL", view.selectedRow > view.oldScrollRow)
-        }
-        Timer {
-            interval: 700; running: true
-            onTriggered: {
-                var row = rowRepeater.itemAt(view.selectedRow);
-                var before = row.scrollPosition;
-                view.scrollAxis(true, -96, view.width / 2, view.height / 2);
-                console.log("SCROLLOVERVIEW-HSCROLL", row.scrollPosition < before);
-                view.oldScrollRow = view.selectedRow;
-                view.scrollAxis(false, view.rowHeight + view.rowGap, view.width / 2, view.height / 2);
-                checkVerticalScroll.restart();
-                console.log("SCROLLOVERVIEW-PREVIEWS", view.createdPreviews);
-            }
-        }
-        Component.onCompleted: { refresh(); forceActiveFocus(); console.log("SCROLLOVERVIEW-VIEW", rows.length, rows.reduce(function(n,r) { return n+r.windows.length; },0)); }''')
-        source = source.replace("model: desktopRow.renderedWindows.length", "id: smokeWindowRepeater\n                                model: desktopRow.renderedWindows.length", 1)
-        source = source.replace("                        function holdScroll() {", """                        function testBeginDrop() {
-                            var source = smokeWindowRepeater.itemAt(smokeWindowRepeater.count - 1);
-                            var target = smokeWindowRepeater.itemAt(smokeWindowRepeater.count - 2);
-                            var point = target.mapToItem(view, target.width / 2, target.height / 2);
-                            dragToken.x = point.x;
-                            dragToken.y = point.y;
-                            effect.draggedId = source.modelData.id;
-                        }
-                        function holdScroll() {""", 1)
-        source = source.replace("id: preview", "id: preview\n                                    Component.onCompleted: view.createdPreviews++", 1)
-        if args.screenshot:
-            args.screenshot.parent.mkdir(parents=True, exist_ok=True)
-            source = source.replace("interval: 700;", "interval: 2700;")
-            source = source.replace("interval: 4500;", "interval: 6500;")
-            source = source.replace("interval: 6500; running: true\n        onTriggered: {\n            effect.close();", "interval: 8500; running: true\n        onTriggered: {\n            effect.close();")
+        for anchor, hook in hooks.items():
+            if source.count(anchor) != 1:
+                raise RuntimeError(f"Smoke hook anchor not found exactly once in main.qml: {anchor.strip()}")
+            source = source.replace(anchor, anchor + hook)
         main_qml.write_text(source)
-        guard_qml = main_qml.parent / "ShortcutGuard.qml"
-        guard_qml.write_text(guard_qml.read_text().replace(
-            '        onFailed:', '        onFinished: console.log("SCROLLOVERVIEW-SHORTCUTS-BLOCKED", call.arguments[0])\n        onFailed:', 1))
         client_qml = temp / "client.qml"
         client_qml.write_text("""import QtQuick
 import QtQuick.Window

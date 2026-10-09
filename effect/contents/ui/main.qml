@@ -22,7 +22,7 @@ KWin.SceneEffect {
     // and leaves early while closing, so the zoom itself stays uncluttered.
     readonly property real chrome: Math.max(0, Math.min(1, (reveal - Style.chromeStart) / (1 - Style.chromeStart)))
 
-    ShortcutGuard { active: effect.visible }
+    ShortcutGuard { id: shortcutGuard; active: effect.visible }
 
     function begin() {
         if (!Bridge.ready()) {
@@ -456,6 +456,10 @@ KWin.SceneEffect {
                         readonly property real homeContentX: originPadding + modelData.viewX * view.zoom
                         // Position on this row's wallpaper, which is the screen once closed.
                         function wallpaperX(x) { return (x - modelData.viewX) * view.zoom; }
+                        // Where Karousel's view starts on screen, in `item` coordinates.
+                        function viewportOrigin(item) { return strip.contentItem.mapToItem(item, stripX(modelData.viewX), 0); }
+                        readonly property int previewCount: previewRepeater.count
+                        function previewItem(index) { return previewRepeater.itemAt(index); }
                         function scroll(delta) { horizontalMotion.scroll(delta); }
                         function pan(delta) { horizontalMotion.pan(delta); }
                         // Column boundary nearest to strip content x.
@@ -594,6 +598,7 @@ KWin.SceneEffect {
                                 }
                             }
                             Repeater {
+                                id: previewRepeater
                                 model: desktopRow.renderedWindows.length
                                 delegate: Item {
                                     id: preview

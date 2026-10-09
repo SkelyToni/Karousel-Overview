@@ -6,6 +6,8 @@ import org.kde.kwin as KWin
 Item {
     id: guard
     property bool active: false
+    // Whether kglobalaccel has confirmed that shortcuts are suspended.
+    property bool blocked: false
     function update(blocked) {
         call.arguments = [blocked];
         call.call();
@@ -18,6 +20,7 @@ Item {
         path: "/kglobalaccel"
         dbusInterface: "org.kde.KGlobalAccel"
         method: "blockGlobalShortcuts"
+        onFinished: guard.blocked = call.arguments[0]
         onFailed: console.warn("Scroll Overview: could not update shortcut inhibition")
     }
 }

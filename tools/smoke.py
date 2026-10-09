@@ -243,10 +243,11 @@ Window {
                     shutil.copy(ROOT / "tools/install.py", source_root / "tools/install.py")
                     shutil.copytree(ROOT / "effect", source_root / "effect")
                     updated_main = source_root / "effect/contents/ui/main.qml"
-                    updated_main.write_text(updated_main.read_text().replace("Scroll Overview 0.7.0 loaded", "Scroll Overview hotreload loaded"))
+                    updated_main.write_text(updated_main.read_text() + "\n// hot reload revision\n")
                     subprocess.run([sys.executable, str(source_root / "tools/install.py"), "install",
                                     "--data-home", str(temp / "data"), "--reload-effect"], env=env,
                                    stdout=log, stderr=log, check=True, timeout=10)
+                    reloaded_id = json.loads((package / ".scrolloverview-backup/manifest.json").read_text())["effect_id"]
                     time.sleep(1)
             finally:
                 for process in reversed(processes):
@@ -274,7 +275,7 @@ Window {
             raise RuntimeError("QML runtime errors:\n" + "\n".join(errors[:20]))
         if args.screenshot and not args.screenshot.exists():
             raise RuntimeError(f"Overview capture was not saved; inspect {args.log}")
-        if args.hot_reload and "Scroll Overview hotreload loaded" not in output:
+        if args.hot_reload and f"Scroll Overview loaded from file://{temp}/data/kwin/effects/{reloaded_id}/" not in output:
             raise RuntimeError(f"The compositor retained stale QML during reload; inspect {args.log}")
         print(f"Virtual KWin smoke passed: shared bridge, three desktops, four live previews, stacking, splitting, moving between desktops, focus, open and close. Log: {args.log}")
 

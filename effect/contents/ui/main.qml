@@ -124,7 +124,8 @@ KWin.SceneEffect {
         function onCurrentActivityChanged() { if (effect.visible) effect.close(); }
     }
     Component.onDestruction: Bridge.setVisible(false)
-    Component.onCompleted: console.log("Scroll Overview 0.7.0 loaded")
+    // The package directory names the installed revision.
+    Component.onCompleted: console.log("Scroll Overview loaded from", Qt.resolvedUrl("."))
 
     delegate: FocusScope {
         id: view

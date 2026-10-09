@@ -136,6 +136,7 @@ KWin.SceneEffect {
         readonly property real zoom: Style.zoom
         readonly property real rowHeight: screen.geometry.height * zoom
         readonly property real rowGap: Style.rowGap
+        readonly property real rowStep: rowHeight + rowGap
         readonly property real columnSpacing: Style.columnSpacing
         readonly property real columnGapExtra: columnSpacing * effect.reveal
         // Interpolate scale geometrically so the zoom rate looks constant.
@@ -195,8 +196,10 @@ KWin.SceneEffect {
                 centerRow(selectedRow);
             }
         }
+        // Vertical scroll that centers desktop row `index`.
+        function rowContentY(index) { return index * rowStep; }
         function centerRow(index, animate) {
-            var destination = index * (rowHeight + rowGap);
+            var destination = rowContentY(index);
             if (animate) verticalMotion.animateTo(destination);
             else desktops.contentY = verticalMotion.clamp(destination);
         }
@@ -276,7 +279,7 @@ KWin.SceneEffect {
                     var row = rowRepeater.itemAt(i);
                     if (row) row.prepareClose(anchors[i]);
                     if (view.rows[i].current)
-                        view.closingOffsetY = desktops.contentY - i * (view.rowHeight + view.rowGap);
+                        view.closingOffsetY = desktops.contentY - view.rowContentY(i);
                 }
             }
         }
@@ -324,7 +327,7 @@ KWin.SceneEffect {
             id: verticalMotion
             viewport: desktops; axis: "contentY"
             maximum: desktops.contentHeight - desktops.height
-            snapStep: view.rowHeight + view.rowGap
+            snapStep: view.rowStep
         }
         FrameAnimation {
             running: effect.draggedId !== ""
@@ -378,7 +381,7 @@ KWin.SceneEffect {
             onContentYChanged: {
                 if (view.initialized && !effect.closing && !verticalMotion.navigating)
                     view.selectedRow = Math.max(0, Math.min(view.rows.length - 1,
-                        Math.round(contentY / (view.rowHeight + view.rowGap))));
+                        Math.round(contentY / view.rowStep)));
             }
             interactive: !effect.closing && !effect.gesturing
             contentItem.transform: Translate {
@@ -436,14 +439,30 @@ KWin.SceneEffect {
                             renderedWindows = order.map(function(id) { return lookup[id]; });
                         }
                         onModelDataChanged: updateWindows()
+                        // Coordinates: the snapshot's desktop x is screen-relative with
+                        // Karousel's scroll added, at full scale. These helpers are the only
+                        // place that maps it into this row; keep every position on them.
                         readonly property real inset: Math.max(0, (strip.width - view.screen.geometry.width * view.zoom) / 2)
                         readonly property real originPadding: Math.max(0, -modelData.viewX * view.zoom)
+                        // Width of all columns at overview scale, with full column spacing.
+                        readonly property real columnsExtent: modelData.width * view.zoom
+                            + Math.max(0, modelData.columns.length - 1) * view.columnSpacing
+                        // Strip content x of desktop x, plus the gap opened before tiled
+                        // column `columnIndex` (floating windows pass -1).
+                        function stripX(x, columnIndex) {
+                            return inset + originPadding + x * view.zoom + Math.max(0, columnIndex || 0) * view.columnGapExtra;
+                        }
+                        // Strip scroll that shows exactly Karousel's current view.
+                        readonly property real homeContentX: originPadding + modelData.viewX * view.zoom
+                        // Position on this row's wallpaper, which is the screen once closed.
+                        function wallpaperX(x) { return (x - modelData.viewX) * view.zoom; }
                         function scroll(delta) { horizontalMotion.scroll(delta); }
                         function pan(delta) { horizontalMotion.pan(delta); }
+                        // Column boundary nearest to strip content x.
                         function insertionPosition(x) {
                             for (var i = 0; i < modelData.columns.length; ++i) {
                                 var column = modelData.columns[i];
-                                if (x < (column.x + column.width / 2) * view.zoom + i * view.columnGapExtra) return i;
+                                if (x < stripX(column.x + column.width / 2, i)) return i;
                             }
                             return modelData.columns.length;
                         }
@@ -456,11 +475,10 @@ KWin.SceneEffect {
                             horizontalMotion.stop();
                             strip.cancelFlick();
                             if (anchor !== null && anchor !== undefined) strip.contentX = anchor + originPadding;
-                            closingOffsetX = strip.contentX - (originPadding + modelData.viewX * view.zoom);
+                            closingOffsetX = strip.contentX - homeContentX;
                         }
                         function ensureWindow(window) {
-                            var center = inset + originPadding + (window.x + window.width / 2) * view.zoom
-                                + (window.tiled ? window.columnIndex * view.columnGapExtra : 0);
+                            var center = stripX(window.x + window.width / 2, window.columnIndex);
                             horizontalMotion.animateTo(center - strip.width / 2);
                         }
                         ScrollMotion {
@@ -525,15 +543,14 @@ KWin.SceneEffect {
                             contentItem.transform: Translate {
                                 x: effect.closing ? desktopRow.closingOffsetX * view.cameraTravel : 0
                             }
-                            contentWidth: Math.max(width, desktopRow.modelData.width * view.zoom + 2 * desktopRow.inset + desktopRow.originPadding
-                                + Math.max(0, desktopRow.modelData.columns.length - 1) * view.columnSpacing)
+                            contentWidth: Math.max(width, desktopRow.stripX(0) + desktopRow.columnsExtent + desktopRow.inset)
                             contentHeight: height
                             boundsBehavior: Flickable.StopAtBounds
                             flickableDirection: Flickable.HorizontalFlick
                             Component.onCompleted: {
                                 var saved = view.scrollPositions[desktopRow.modelData.id];
-                                contentX = Math.max(0, Math.min(contentWidth - width, saved === undefined ?
-                                    desktopRow.originPadding + desktopRow.modelData.viewX * view.zoom : saved));
+                                contentX = Math.max(0, Math.min(contentWidth - width,
+                                    saved === undefined ? desktopRow.homeContentX : saved));
                                 desktopRow.scrollInitialized = true;
                             }
                             onMovementStarted: horizontalMotion.stop()
@@ -547,9 +564,9 @@ KWin.SceneEffect {
                             // Retain the full row's click/drop area, but let off-screen
                             // windows sit directly over the blurred overview backdrop.
                             Item {
-                                x: desktopRow.inset + desktopRow.originPadding
-                                width: desktopRow.modelData.width * view.zoom
-                                    + Math.max(0, desktopRow.modelData.columns.length - 1) * view.columnSpacing
+                                id: columnArea
+                                x: desktopRow.stripX(0)
+                                width: desktopRow.columnsExtent
                                 height: strip.height
                                 MouseArea {
                                     anchors.fill: parent
@@ -563,13 +580,13 @@ KWin.SceneEffect {
                                     keys: ["scrolloverview-window"]
                                     function updatePreview() {
                                         var point = dragToken.mapToItem(columnDrop, 0, 0);
-                                        view.previewDrop(desktopRow.modelData, desktopRow.insertionPosition(point.x), "", columnDrop);
+                                        view.previewDrop(desktopRow.modelData, desktopRow.insertionPosition(columnArea.x + point.x), "", columnDrop);
                                     }
                                     onEntered: updatePreview()
                                     onPositionChanged: updatePreview()
                                     onExited: view.clearDrop(columnDrop)
                                     onDropped: function(drop) {
-                                        var position = desktopRow.insertionPosition(drop.x);
+                                        var position = desktopRow.insertionPosition(columnArea.x + drop.x);
                                         Layout.move(Bridge.provider, effect.draggedId, desktopRow.modelData.id, position, "");
                                         view.clearDrop(columnDrop);
                                         drop.acceptProposedAction();
@@ -583,8 +600,7 @@ KWin.SceneEffect {
                                     required property int index
                                     readonly property var modelData: desktopRow.renderedWindows[index]
                                     readonly property bool animateGeometry: effect.reveal === 1 && !effect.animating && !effect.closing && !view.geometryLocked && !effect.draggedId
-                                    x: desktopRow.inset + desktopRow.originPadding + modelData.x * view.zoom
-                                        + (modelData.tiled ? modelData.columnIndex * view.columnGapExtra : 0)
+                                    x: desktopRow.stripX(modelData.x, modelData.columnIndex)
                                     // Center each complete column in the wallpaper during
                                     // overview, then restore desktop coordinates for closing.
                                     y: (modelData.y + (modelData.tiled ? desktopRow.verticalOffsets[modelData.columnIndex] || 0 : 0)
@@ -611,7 +627,7 @@ KWin.SceneEffect {
                                         visible: sourceItem !== null
                                         sourceItem: blurBacking.item ? blurBacking.item.blur : null
                                         // The wallpaper under the window once it is back on the desktop.
-                                        sourceRect: Qt.rect((preview.modelData.x - desktopRow.modelData.viewX) * view.zoom,
+                                        sourceRect: Qt.rect(desktopRow.wallpaperX(preview.modelData.x),
                                             preview.modelData.y * view.zoom, preview.width, preview.height)
                                     }
                                     KWin.WindowThumbnail {
@@ -694,7 +710,7 @@ KWin.SceneEffect {
                                 readonly property var plan: view.dropPreview && view.dropPreview.desktopId === desktopRow.modelData.id ? view.dropPreview : null
                                 sourceId: effect.draggedId
                                 destination: plan ? {
-                                    x: desktopRow.inset + desktopRow.originPadding + plan.x * view.zoom + plan.columnIndex * view.columnGapExtra,
+                                    x: desktopRow.stripX(plan.x, plan.columnIndex),
                                     y: plan.y * view.zoom,
                                     width: plan.width * view.zoom,
                                     height: plan.height * view.zoom

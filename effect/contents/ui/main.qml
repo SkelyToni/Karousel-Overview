@@ -1,6 +1,7 @@
 import QtQuick
-import Qt5Compat.GraphicalEffects
 import org.kde.kwin as KWin
+// Only this file may import Bridge.js: the installer points this import at
+// the copy shared with Karousel, and other files would get a private copy.
 import "Bridge.js" as Bridge
 import "Layout.js" as Layout
 import "DropPreview.js" as DropPreview
@@ -173,6 +174,9 @@ KWin.SceneEffect {
                 verticalGap: layout.grid.config.gapsInnerVertical,
                 preferredWidth: window.client.preferredWidth
             });
+        }
+        function moveWindow(id, desktopId, position, stackId) {
+            Layout.move(Bridge.provider, id, desktopId, position, stackId);
         }
         function clearDrop(owner) {
             if (dropOwner === owner) { dropOwner = null; dropPreview = null; }
@@ -349,22 +353,12 @@ KWin.SceneEffect {
             }
         }
 
-        // Same wallpaper source and blur radius as Plasma's built-in overview.
-        // It stays opaque so edges uncovered by the zoom never flash dark;
-        // only the dimming follows the transition.
-        Item {
+        Backdrop {
             anchors.fill: parent
-            Rectangle { anchors.fill: parent; color: Style.backdropColor }
-            KWin.DesktopBackground {
-                id: wallpaper
-                anchors.fill: parent
-                activity: KWin.Workspace.currentActivity
-                desktop: effect.openedDesktop || KWin.Workspace.currentDesktop
-                outputName: view.screen.name
-                visible: false
-            }
-            FastBlur { anchors.fill: parent; source: wallpaper; radius: Style.backdropBlur }
-            Rectangle { anchors.fill: parent; color: Style.backdropColor; opacity: Style.backdropDim * effect.reveal }
+            // Keep the wallpaper the overview opened from, see openedDesktop.
+            desktop: effect.openedDesktop
+            outputName: view.screen.name
+            progress: effect.reveal
         }
         Flickable {
             id: desktops
@@ -401,379 +395,21 @@ KWin.SceneEffect {
                 Repeater {
                     id: rowRepeater
                     model: view.rows.length
-                    delegate: Item {
-                        id: desktopRow
-                        required property int index
-                        readonly property var modelData: view.rows[index]
+                    delegate: DesktopRow {
                         width: rowColumn.width
                         height: view.rowHeight
-                        property bool scrollInitialized: false
-                        property real closingOffsetX: 0
-                        readonly property real scrollPosition: strip.contentX
-                        property var renderedWindows: []
-                        property var verticalOffsets: ({})
-                        function updateWindows() {
-                            var lookup = {};
-                            var next = modelData.windows;
-                            var bounds = {};
-                            next.forEach(function(window) {
-                                if (!window.tiled) return;
-                                var key = window.columnIndex;
-                                var extent = bounds[key];
-                                if (!extent) bounds[key] = { top: window.y, bottom: window.y + window.height };
-                                else {
-                                    extent.top = Math.min(extent.top, window.y);
-                                    extent.bottom = Math.max(extent.bottom, window.y + window.height);
-                                }
-                            });
-                            var offsets = {};
-                            Object.keys(bounds).forEach(function(key) {
-                                var extent = bounds[key];
-                                offsets[key] = (view.screen.geometry.height - extent.top - extent.bottom) / 2;
-                            });
-                            verticalOffsets = offsets;
-                            next.forEach(function(window) { lookup[window.id] = window; });
-                            var order = renderedWindows.map(function(window) { return window.id; })
-                                .filter(function(id) { return lookup[id] !== undefined; });
-                            next.forEach(function(window) { if (order.indexOf(window.id) < 0) order.push(window.id); });
-                            renderedWindows = order.map(function(id) { return lookup[id]; });
-                        }
-                        onModelDataChanged: updateWindows()
-                        // Coordinates: the snapshot's desktop x is screen-relative with
-                        // Karousel's scroll added, at full scale. These helpers are the only
-                        // place that maps it into this row; keep every position on them.
-                        readonly property real inset: Math.max(0, (strip.width - view.screen.geometry.width * view.zoom) / 2)
-                        readonly property real originPadding: Math.max(0, -modelData.viewX * view.zoom)
-                        // Width of all columns at overview scale, with full column spacing.
-                        readonly property real columnsExtent: modelData.width * view.zoom
-                            + Math.max(0, modelData.columns.length - 1) * view.columnSpacing
-                        // Strip content x of desktop x, plus the gap opened before tiled
-                        // column `columnIndex` (floating windows pass -1).
-                        function stripX(x, columnIndex) {
-                            return inset + originPadding + x * view.zoom + Math.max(0, columnIndex || 0) * view.columnGapExtra;
-                        }
-                        // Strip scroll that shows exactly Karousel's current view.
-                        readonly property real homeContentX: originPadding + modelData.viewX * view.zoom
-                        // Position on this row's wallpaper, which is the screen once closed.
-                        function wallpaperX(x) { return (x - modelData.viewX) * view.zoom; }
-                        // Where Karousel's view starts on screen, in `item` coordinates.
-                        function viewportOrigin(item) { return strip.contentItem.mapToItem(item, stripX(modelData.viewX), 0); }
-                        readonly property int previewCount: previewRepeater.count
-                        function previewItem(index) { return previewRepeater.itemAt(index); }
-                        function scroll(delta) { horizontalMotion.scroll(delta); }
-                        function pan(delta) { horizontalMotion.pan(delta); }
-                        // Column boundary nearest to strip content x.
-                        function insertionPosition(x) {
-                            for (var i = 0; i < modelData.columns.length; ++i) {
-                                var column = modelData.columns[i];
-                                if (x < stripX(column.x + column.width / 2, i)) return i;
-                            }
-                            return modelData.columns.length;
-                        }
-                        function holdScroll() {
-                            horizontalMotion.stop();
-                            strip.cancelFlick();
-                            return strip.contentX - originPadding;
-                        }
-                        function prepareClose(anchor) {
-                            horizontalMotion.stop();
-                            strip.cancelFlick();
-                            if (anchor !== null && anchor !== undefined) strip.contentX = anchor + originPadding;
-                            closingOffsetX = strip.contentX - homeContentX;
-                        }
-                        function ensureWindow(window) {
-                            var center = stripX(window.x + window.width / 2, window.columnIndex);
-                            horizontalMotion.animateTo(center - strip.width / 2);
-                        }
-                        ScrollMotion {
-                            id: horizontalMotion
-                            viewport: strip; axis: "contentX"
-                            maximum: strip.contentWidth - strip.width
-                        }
-                        // The desktop viewport stays centered while its windows scroll.
-                        Item {
-                            id: desktopWallpaper
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            width: view.screen.geometry.width * view.zoom
-                            height: parent.height
-                            KWin.DesktopBackground {
-                                anchors.fill: parent
-                                activity: KWin.Workspace.currentActivity
-                                desktop: desktopRow.modelData.desktop
-                                outputName: view.screen.name
-                                opacity: 1 - Style.desktopDim * effect.reveal
-                            }
-                            // KWin blurs the wallpaper behind translucent windows. While the
-                            // transition shows real-size windows, back them with the same kind
-                            // of blur so the handoff to the desktop does not change them.
-                            Loader {
-                                id: blurBacking
-                                anchors.fill: parent
-                                active: desktopRow.modelData.current && effect.chrome < 1
-                                sourceComponent: Item {
-                                    property alias blur: blurred
-                                    KWin.DesktopBackground {
-                                        id: blurSource
-                                        anchors.fill: parent
-                                        activity: KWin.Workspace.currentActivity
-                                        desktop: desktopRow.modelData.desktop
-                                        outputName: view.screen.name
-                                        visible: false
-                                    }
-                                    FastBlur { id: blurred; anchors.fill: parent; source: blurSource; radius: Style.translucentBlur; visible: false }
-                                }
-                            }
-                            Rectangle {
-                                anchors.fill: parent
-                                color: "transparent"
-                                radius: Style.desktopRadius * effect.chrome
-                                border.width: effect.chrome
-                                opacity: effect.chrome
-                                border.color: desktopRow.index === view.selectedRow ? Style.desktopBorderSelected : Style.desktopBorder
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                onClicked: view.activate("", desktopRow.modelData.id)
-                            }
-                        }
-                        Flickable {
-                            id: strip
-                            anchors.fill: parent
-                            anchors.leftMargin: Style.stripMargin
-                            anchors.rightMargin: Style.stripMargin
-                            // Keep clipping stable throughout the zoom; the output clips the scene.
-                            clip: false
-                            interactive: !effect.closing && !effect.gesturing
-                            contentItem.transform: Translate {
-                                x: effect.closing ? desktopRow.closingOffsetX * view.cameraTravel : 0
-                            }
-                            contentWidth: Math.max(width, desktopRow.stripX(0) + desktopRow.columnsExtent + desktopRow.inset)
-                            contentHeight: height
-                            boundsBehavior: Flickable.StopAtBounds
-                            flickableDirection: Flickable.HorizontalFlick
-                            Component.onCompleted: {
-                                var saved = view.scrollPositions[desktopRow.modelData.id];
-                                contentX = Math.max(0, Math.min(contentWidth - width,
-                                    saved === undefined ? desktopRow.homeContentX : saved));
-                                desktopRow.scrollInitialized = true;
-                            }
-                            onMovementStarted: horizontalMotion.stop()
-                            onContentXChanged: {
-                                if (desktopRow.scrollInitialized)
-                                    view.scrollPositions[desktopRow.modelData.id] = contentX;
-                                if (effect.draggedId && view.dropOwner && view.dropPreview &&
-                                    view.dropPreview.desktopId === desktopRow.modelData.id)
-                                    view.dropOwner.updatePreview();
-                            }
-                            // Retain the full row's click/drop area, but let off-screen
-                            // windows sit directly over the blurred overview backdrop.
-                            Item {
-                                id: columnArea
-                                x: desktopRow.stripX(0)
-                                width: desktopRow.columnsExtent
-                                height: strip.height
-                                MouseArea {
-                                    anchors.fill: parent
-                                    onClicked: {
-                                        view.activate("", desktopRow.modelData.id);
-                                    }
-                                }
-                                DropArea {
-                                    id: columnDrop
-                                    anchors.fill: parent
-                                    keys: ["scrolloverview-window"]
-                                    function updatePreview() {
-                                        var point = dragToken.mapToItem(columnDrop, 0, 0);
-                                        view.previewDrop(desktopRow.modelData, desktopRow.insertionPosition(columnArea.x + point.x), "", columnDrop);
-                                    }
-                                    onEntered: updatePreview()
-                                    onPositionChanged: updatePreview()
-                                    onExited: view.clearDrop(columnDrop)
-                                    onDropped: function(drop) {
-                                        var position = desktopRow.insertionPosition(columnArea.x + drop.x);
-                                        Layout.move(Bridge.provider, effect.draggedId, desktopRow.modelData.id, position, "");
-                                        view.clearDrop(columnDrop);
-                                        drop.acceptProposedAction();
-                                    }
-                                }
-                            }
-                            Repeater {
-                                id: previewRepeater
-                                model: desktopRow.renderedWindows.length
-                                delegate: Item {
-                                    id: preview
-                                    required property int index
-                                    readonly property var modelData: desktopRow.renderedWindows[index]
-                                    readonly property bool animateGeometry: effect.reveal === 1 && !effect.animating && !effect.closing && !view.geometryLocked && !effect.draggedId
-                                    x: desktopRow.stripX(modelData.x, modelData.columnIndex)
-                                    // Center each complete column in the wallpaper during
-                                    // overview, then restore desktop coordinates for closing.
-                                    y: (modelData.y + (modelData.tiled ? desktopRow.verticalOffsets[modelData.columnIndex] || 0 : 0)
-                                        * effect.reveal) * view.zoom
-                                    width: modelData.width * view.zoom
-                                    height: modelData.height * view.zoom
-                                    z: modelData.tiled ? 1 : 2
-                                    Behavior on x { enabled: preview.animateGeometry; NumberAnimation { duration: Style.previewSlideMs; easing.type: Easing.OutCubic } }
-                                    Behavior on y { enabled: preview.animateGeometry; NumberAnimation { duration: Style.previewSlideMs; easing.type: Easing.OutCubic } }
-                                    Behavior on width { enabled: preview.animateGeometry; NumberAnimation { duration: Style.previewSlideMs; easing.type: Easing.OutCubic } }
-                                    Behavior on height { enabled: preview.animateGeometry; NumberAnimation { duration: Style.previewSlideMs; easing.type: Easing.OutCubic } }
-                                    Rectangle {
-                                        anchors.fill: parent
-                                        anchors.margins: preview.modelData.id === view.selectedWindow ? -Style.selectionWidth * effect.chrome : 0
-                                        radius: Style.previewRadius * effect.chrome
-                                        // Fades like the rest of the chrome, so translucent windows end
-                                        // the transition over the blur KWin draws behind them.
-                                        color: Qt.alpha(Style.previewBacking, effect.chrome)
-                                        border.width: preview.modelData.id === view.selectedWindow ? Style.selectionWidth * effect.chrome : 0
-                                        border.color: Style.accent
-                                    }
-                                    ShaderEffectSource {
-                                        anchors.fill: parent
-                                        visible: sourceItem !== null
-                                        sourceItem: blurBacking.item ? blurBacking.item.blur : null
-                                        // The wallpaper under the window once it is back on the desktop.
-                                        sourceRect: Qt.rect(desktopRow.wallpaperX(preview.modelData.x),
-                                            preview.modelData.y * view.zoom, preview.width, preview.height)
-                                    }
-                                    KWin.WindowThumbnail {
-                                        anchors.fill: parent
-                                        wId: preview.modelData.id
-                                        opacity: effect.draggedId === preview.modelData.id ? 0.5 : 1
-                                        Behavior on opacity { NumberAnimation { duration: Style.dragFadeMs } }
-                                    }
-                                    Rectangle {
-                                        anchors.left: parent.left
-                                        anchors.right: parent.right
-                                        anchors.bottom: parent.bottom
-                                        height: Style.captionHeight
-                                        color: Style.captionBackground
-                                        opacity: effect.chrome * (previewMouse.containsMouse || preview.modelData.id === view.selectedWindow ? 1 : 0)
-                                        Behavior on opacity { NumberAnimation { duration: Style.captionFadeMs } }
-                                        Text {
-                                            anchors.fill: parent
-                                            anchors.margins: 5
-                                            text: preview.modelData.caption
-                                            elide: Text.ElideRight
-                                            color: Style.captionText
-                                            font.pixelSize: Style.captionFontSize
-                                        }
-                                    }
-                                    DropArea {
-                                        id: stackDrop
-                                        anchors.fill: parent
-                                        anchors.margins: Math.min(preview.width, preview.height) * 0.2
-                                        keys: ["scrolloverview-window"]
-                                        function updatePreview() {
-                                            view.previewDrop(desktopRow.modelData, preview.modelData.columnIndex, preview.modelData.id, stackDrop);
-                                        }
-                                        onEntered: updatePreview()
-                                        onPositionChanged: updatePreview()
-                                        onExited: view.clearDrop(stackDrop)
-                                        onDropped: function(drop) {
-                                            if (effect.draggedId !== preview.modelData.id) {
-                                                Layout.move(Bridge.provider, effect.draggedId, desktopRow.modelData.id,
-                                                    preview.modelData.columnIndex, preview.modelData.id);
-                                                drop.acceptProposedAction();
-                                            }
-                                            view.clearDrop(stackDrop);
-                                        }
-                                    }
-                                    MouseArea {
-                                        id: previewMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        onEntered: {
-                                            if (effect.closing || effect.gesturing || effect.draggedId) return;
-                                            view.selectedRow = desktopRow.index;
-                                            view.selectedWindow = preview.modelData.id;
-                                        }
-                                        preventStealing: true
-                                        drag.target: dragToken
-                                        onPressed: function(mouse) {
-                                            view.selectedRow = desktopRow.index;
-                                            view.selectedWindow = preview.modelData.id;
-                                            var point = mapToItem(view, mouse.x, mouse.y);
-                                            dragToken.x = point.x;
-                                            dragToken.y = point.y;
-                                        }
-                                        onClicked: {
-                                            view.activate(preview.modelData.id, desktopRow.modelData.id);
-                                        }
-                                        onReleased: {
-                                            if (effect.draggedId) dragToken.Drag.drop();
-                                            effect.draggedId = "";
-                                            effect.revision++;
-                                        }
-                                        onCanceled: { effect.draggedId = ""; }
-                                        onPositionChanged: {
-                                            if (drag.active) effect.draggedId = preview.modelData.id;
-                                        }
-                                    }
-                                }
-                            }
-                            DropGhost {
-                                readonly property var plan: view.dropPreview && view.dropPreview.desktopId === desktopRow.modelData.id ? view.dropPreview : null
-                                sourceId: effect.draggedId
-                                destination: plan ? {
-                                    x: desktopRow.stripX(plan.x, plan.columnIndex),
-                                    y: plan.y * view.zoom,
-                                    width: plan.width * view.zoom,
-                                    height: plan.height * view.zoom
-                                } : null
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                acceptedButtons: Qt.RightButton
-                                preventStealing: true
-                                property real previousX: 0
-                                onPressed: function(mouse) { previousX = mouse.x; horizontalMotion.stop(); }
-                                onPositionChanged: function(mouse) {
-                                    if (pressed) { desktopRow.pan(previousX - mouse.x); previousX = mouse.x; }
-                                }
-                            }
-                        }
+                        screenView: view
+                        overview: effect
+                        token: dragToken
                     }
                 }
             }
         }
-        // Live copies of this screen's panels sit exactly over the real ones
-        // when closed and slide out toward their edge as the overview opens,
-        // so neither end of the transition makes them pop.
-        Repeater {
-            id: panels
-            model: []
-            Component.onCompleted: {
-                var docks = [];
-                var windows = KWin.Workspace.windows;
-                for (var i = 0; i < windows.length; ++i) {
-                    var w = windows[i];
-                    if (w.dock && !w.hidden && w.output && w.output.name === view.screen.name) docks.push(w);
-                }
-                model = docks;
-            }
-            delegate: KWin.WindowThumbnail {
-                required property var modelData
-                readonly property rect area: Qt.rect(modelData.frameGeometry.x - view.screen.geometry.x,
-                    modelData.frameGeometry.y - view.screen.geometry.y,
-                    modelData.frameGeometry.width, modelData.frameGeometry.height)
-                // Slide toward the nearest screen edge, far enough to leave it.
-                readonly property var exits: [
-                    { gap: area.y + area.height / 2, dx: 0, dy: -(area.y + area.height) },
-                    { gap: view.height - area.y - area.height / 2, dx: 0, dy: view.height - area.y },
-                    { gap: area.x + area.width / 2, dx: -(area.x + area.width), dy: 0 },
-                    { gap: view.width - area.x - area.width / 2, dx: view.width - area.x, dy: 0 }
-                ].sort(function(a, b) { return a.gap - b.gap; })
-                // Leave a little faster than the zoom so the panel is gone mid-way.
-                readonly property real progress: Math.min(1, effect.reveal / Style.panelExit)
-                wId: String(modelData.internalId)
-                x: area.x + exits[0].dx * progress
-                y: area.y + exits[0].dy * progress
-                width: area.width
-                height: area.height
-                z: 50
-                opacity: 1 - progress
-                visible: progress < 1
-            }
+        PanelGhosts {
+            anchors.fill: parent
+            z: 50
+            output: view.screen
+            progress: effect.reveal
         }
         Item {
             id: dragToken

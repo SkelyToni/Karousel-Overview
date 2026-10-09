@@ -50,15 +50,19 @@ Item {
         }
         return modelData.columns.length;
     }
-    function holdScroll() {
+    // Closing, see the view's beginClosing(). Stops scrolling and returns
+    // the strip's on-screen position, independent of origin padding.
+    function captureScroll() {
         horizontalMotion.stop();
         strip.cancelFlick();
         return strip.contentX - originPadding;
     }
-    function prepareClose(anchor) {
+    // Restores a captured position after a refresh and aims the closing pan
+    // at Karousel's current view.
+    function prepareClose(captured) {
         horizontalMotion.stop();
         strip.cancelFlick();
-        if (anchor !== null && anchor !== undefined) strip.contentX = anchor + originPadding;
+        if (captured !== null && captured !== undefined) strip.contentX = captured + originPadding;
         closingOffsetX = strip.contentX - homeContentX;
     }
     function ensureWindow(window) {

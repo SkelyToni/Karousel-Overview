@@ -9,6 +9,11 @@ import "Style.js" as Style
 
 KWin.SceneEffect {
     id: effect
+    // Lifecycle: begin() shows the effect at reveal 0; open() and close()
+    // animate reveal with RevealMotion, while gestures drive it directly
+    // (gesturing). `closing` is set by the first closing step and stays set
+    // until the next begin(); the view uses it to aim the camera at the
+    // destination (see the view's beginClosing()).
     property real reveal: 0
     property bool gesturing: false
     property bool gestureStartedOpen: false
@@ -175,6 +180,31 @@ KWin.SceneEffect {
                 preferredWidth: window.client.preferredWidth
             });
         }
+        // Prepares the camera to zoom into Karousel's view of the current
+        // desktop. The steps depend on each other, in this order:
+        // 1. Lock preview geometry first, so the refresh in step 3 moves
+        //    previews instantly instead of starting slides mid-zoom.
+        // 2. Stop all scrolling and note where each strip sits on screen.
+        // 3. Refresh: focusing a window made Karousel rescroll, which can
+        //    change a row's origin padding.
+        // 4. Put each strip back where it was on screen and aim the closing
+        //    pan at Karousel's view; the camera then follows effect.reveal.
+        function beginClosing() {
+            geometryLocked = true;
+            verticalMotion.stop();
+            desktops.cancelFlick();
+            var captured = [];
+            for (var j = 0; j < rowRepeater.count; ++j) {
+                var shown = rowRepeater.itemAt(j);
+                captured.push(shown ? shown.captureScroll() : null);
+            }
+            refresh();
+            for (var i = 0; i < rows.length; ++i) {
+                var row = rowRepeater.itemAt(i);
+                if (row) row.prepareClose(captured[i]);
+                if (rows[i].current) closingOffsetY = desktops.contentY - rowContentY(i);
+            }
+        }
         function moveWindow(id, desktopId, position, stackId) {
             Layout.move(Bridge.provider, id, desktopId, position, stackId);
         }
@@ -267,24 +297,8 @@ KWin.SceneEffect {
             }
             function onRevisionChanged() { view.refresh(); }
             function onClosingChanged() {
-                view.geometryLocked = effect.closing;
-                if (!effect.closing) return;
-                verticalMotion.stop();
-                desktops.cancelFlick();
-                // Focusing a window rescrolls Karousel, which can change a row's
-                // origin padding; keep each strip where it is on screen.
-                var anchors = [];
-                for (var j = 0; j < rowRepeater.count; ++j) {
-                    var shown = rowRepeater.itemAt(j);
-                    anchors.push(shown ? shown.holdScroll() : null);
-                }
-                view.refresh();
-                for (var i = 0; i < view.rows.length; ++i) {
-                    var row = rowRepeater.itemAt(i);
-                    if (row) row.prepareClose(anchors[i]);
-                    if (view.rows[i].current)
-                        view.closingOffsetY = desktops.contentY - view.rowContentY(i);
-                }
+                if (effect.closing) view.beginClosing();
+                else view.geometryLocked = false;
             }
         }
         Keys.priority: Keys.BeforeItem
